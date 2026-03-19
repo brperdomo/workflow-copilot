@@ -1,0 +1,16 @@
+/* Workflow Copilot - Content Script Styles */
+
+#workflow-copilot-indicator {
+  position: fixed;
+  bottom: 12px;
+  right: 12px;
+  width: 10px;
+  height: 10px;
+  background: #6366f1;
+  border-radius: 50%;
+  z-index: 99999;
+  box-shadow: 0 0 6px rgba(99, 102, 241, 0.5);
+  opacity: 0.6;
+  transition: opacity 0.3s;
+  pointer-events: none;
+}

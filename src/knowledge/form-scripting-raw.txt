@@ -1,0 +1,1250 @@
+Here is the result of "view" for the Page with URL https://www.notion.so/a628541fde48440696ff0ea2807e1774 as of 2025-10-06T17:46:49.296Z:
+<page url="https://www.notion.so/a628541fde48440696ff0ea2807e1774" icon="attachment:4a1db913-c1b2-4c76-8a40-ff4a898b95c0:Nutrient-Workflow-Automation-Dark-Background-400x400.png">
+<ancestor-path>
+<parent-database url="https://www.notion.so/28ee1255d6bc809fa403f3a7066c71d4" title="Workflow Wiki"/>
+</ancestor-path>
+<properties>
+{"Verification":"verified","title":"Workflow Form Scripting Reference Manual"}
+</properties>
+<content>
+---
+## Overview
+Workflow Forms support custom scripting (ECMA Script/JavaScript) which provides a very flexible solution in creating a rich user experience. Each question type, as well as the various layout elements (Sections, Containers, etc.) have specific properties and methods available to use within the Form's script. This Reference Manual provides the information for the supported properties and methods of each element and Question Type/Field Type.
+---
+## Form Script
+To add custom script to a form, from the Form Builder click on the **JAVASCRIPT** tab. This will display the Form's script editor.
+Standard ECMA Script (JavaScript) is supported. You should have a basic understanding of ECMA Script/JavaScript before attempting to add custom script to a Workflow Form.
+The custom script is executed when the Form is loaded in Runtime mode, Preview mode, or View mode (formState). You can create global variables within the script as well as bind to events. Note that there is a limited number of event types available for the Workflow form and Questions compared to the number available when using script on a standard HTML page.
+<callout icon="⚠️" color="red_bg">
+	**SPECIAL NOTE ON FORM RULES:** As general rule, and best practice, you should not mix Form Rules and JavaScript on the same form. If you have need for Script on the form, you should perform all functionality from the Form Script. Note that if you bind an event to a Question's onChange event, that binding will disable that Question triggering the evaluation of the Form Rules.
+</callout>
+---
+## The intForm Object
+The Workflow form object is named **intForm**. All interactions within the script should be done using this intForm object. You should never (with 1 or 2 exceptions) address HTML objects directly, as they are created dynamically by the Workflow framework, and the HTML structures and references may change from release to release.
+The **formState** property contains one of three values: **preview**, **runtime**, **completed**. Sometimes you want the Form's script to perform differently, depending on what mode (formState) it's in. You can incorporate the formState value in your script to accomplish this.
+**Example:**
+```javascript
+if(intForm.formState!=='completed') {
+    intForm.getElementByClientID('stxtRequestNumber').Answer = intForm.recipientTask.InstanceID
+}
+```
+### Form Events
+The intForm object has an **onSubmit** event and an **onSaveDraft** event. You can assign either of these to perform custom functions when the SUBMIT button or SAVE DRAFT button is clicked by the user.
+[`intForm.events`](http://intForm.events)`.onSubmit = () => submitTheForm()` will bind the custom function submitTheForm to the Form's onSubmit event. The onSubmit event occurs when the user clicks the SUBMIT button. It's important to remember that this will **replace** the built-in form submit functionality, so the custom script must also handle actually submitting the form. This is done by calling the Form's submit() method.
+**Example:**
+```javascript
+intForm.events.onSubmit() = () => validateForm()
+
+function validateForm() {
+    if(intForm.getElementByClientID('stxtEmployeeNumber') {
+        intForm.submit();
+    }else{
+        alert('Employee Number is a Required Field!');
+        //the Form will not be submitted
+    }
+}
+```
+[`intForm.events`](http://intForm.events)`.onSaveDraft = () => saveFormDraft()` will bind the custom function saveFormDraft to the Form's saveDraft event. The saveDraft event occurs when the user click SAVE DRAFT button. The custom function saveFormDraft must contain a call to the Form's saveDraft() method, to actually save the Form Draft.
+Clicking the SUBMIT or SAVE DRAFT buttons disables both buttons prior to calling the onSubmit or onSaveDraft event, so you must re-enable the buttons if your code's logic does not end in execution of intForm.submit() or intForm.saveDraft() (ex. custom validation fails). If you do not enable the buttons, the user will not be able to submit or save the draft after making the necessary changes to their form data.
+### Submit and Save Draft Buttons
+You may want to disable the Submit and/or Save Draft buttons from within your form script. If you have custom onSubmit or onSaveDraft functions, it's best practice to disable the buttons at the very start of the function. This will prevent the user from clicking the button again while the script is executing. Each button has two methods available to do this:
+```javascript
+intForm.submitButton.disable()
+intForm.submitButton.enable()
+intForm.saveDraftButton.disable()
+intForm.saveDraftButton.enable()
+```
+### Methods for Accessing the Form's Questions/Fields
+**intForm.getElementByClientID(c)**, where c is the clientID of the Question. This method gives you access to the individual Questions/Fields on the Form. Each Question Type has its own set of properties and methods, however many are common between the different types. See the detailed tables below, for a complete list of properties and methods available for each Question type.
+**intForm.getSectionByClientID(c)**, where c is the clientID of the Section.
+### The recipientTask Object
+**intForm.recipientTask** is present if the Form is opened from a Form Task. The object contains information specific to the current user's *Recipient Task*, but also contains basic information about the Request (Instance) and the Form Task itself. All values in the recipientTask object are considered READ ONLY – they should never be changed by the Form Script.
+- TaskName
+- InstanceSID
+- InstanceID
+- Instance
+	- CreatedDate
+	- LastMilestone
+---
+## Standardizing Client IDs
+When you are creating new Questions on a Form, it is recommended and a best practice to always change the generated Client ID with a more meaningful Client ID. This will allow you to more easily identify the Question references within the Script. It is also best practice to use standard prefixes for the Client IDs that indicate the Question Type. For example, "stxt" is used for Short Text Questions. In the script, you are then able to tell Question Type without having to open the configuration of the Question itself.
+---
+## Property and Method Detail of the intForm Field Types
+### Field Types: Short Text / Long Text / Number / Link / Email
+<table header-row="true">
+<colgroup>
+<col>
+<col width="516">
+<col width="94">
+</colgroup>
+<tr>
+<td>Property/Method</td>
+<td>Description/Use</td>
+<td>Read/Write</td>
+</tr>
+<tr>
+<td>Answer</td>
+<td>The value of the field (e.g. the answer to the question). For these field types the value is always a simple text value.<br><br>Note that the empty value for these fields types is null when the field has never had a value. If a previous answer value has been cleared/removed, then the value is an empty string, except for Number with the Currency option used where it is 0 (zero).</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>class</td>
+<td>The CSS style class(es) applied to the field on the form (See section on Defining and Using Classes)</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>ClientID</td>
+<td>The ID of the html element on the form. This is the attribute that is used to reference any element on the form. The ClientID for a field can be changed on the configuration screen. It is recommended that the default long numeric ID is changed to something more meaningful, so it is easier to identify when scripting. The best time to do this is when the field is initially created. (See also: id)</td>
+<td>R</td>
+</tr>
+<tr>
+<td>disabled</td>
+<td>Set to either true or false. If true, the field is disabled and cannot be selected or changed.</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>events</td>
+<td>Contains any script bound to the onFocus, onBlur, and onChange events of the field on the form. These events are emitted similar to the corresponding standard HTML events.</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>flex</td>
+<td>The width % applied to the field on the form. This value is in relation to the container that contains the field on the form.<br><br>Not available for the calendar field type.</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>id</td>
+<td>The system-assigned field ID linked to the field<br>(see also: ClientID)</td>
+<td>R</td>
+</tr>
+<tr>
+<td>isdirty</td>
+<td>Indicates whether the value in the field has been changed since the form was loaded. Returns true if the value has been changed, false if it has not.</td>
+<td>R</td>
+</tr>
+<tr>
+<td>Label</td>
+<td>The label text shown on the form for the field.</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>originalAnswer</td>
+<td>The value of the field when the form initially loads.</td>
+<td>R</td>
+</tr>
+<tr>
+<td>QuestionType</td>
+<td>ShortText, LongText, Number, Hyperlink, EmailAddress, Calendar</td>
+<td>R</td>
+</tr>
+<tr>
+<td>readonly</td>
+<td>Set to either true or false. If true, the field can be selected but the value cannot be changed.</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>setAnswer()</td>
+<td>Sets the date for a Calendar type question. Date must be in YYYY-MM-DD format.</td>
+<td></td>
+</tr>
+<tr>
+<td>show</td>
+<td>Indicates whether the question field should be shown on the form (true/false)</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>todaysDate</td>
+<td>Available only for Calendar fields. Contains the current server date in the format MM/DD/YYYY. It can be useful for obtaining a date that is not dependent on a user's local system date.</td>
+<td>R</td>
+</tr>
+<tr>
+<td>validation</td>
+<td>The validation values and messages used when a form submitted. They correspond to the Validation tab on the question's configuration screen.<br>- regExMessage – The message displayed when the regEx validation fails.<br>- regEx – The regEx expression to use validate the field value.<br>- Max – A maximum length value that is used to compare the field value against.<br>- maxMessage – The message displayed when the Max validation fails.<br>- Min – A minimum length value that is used to compare the field value against.<br>- minMessage – The message displayed when the Min validation fails.<br>- required (true/false) – Indicates whether the field is required. Setting this to true will also trigger the display of the required field indicator (\*).<br>- requiredMessage – The message displayed when the required validation fails.</td>
+<td>RW</td>
+</tr>
+</table>
+### Field Types: Calendar
+<table header-row="true">
+<colgroup>
+<col>
+<col width="515">
+<col width="95">
+</colgroup>
+<tr>
+<td>Property/Method</td>
+<td>Description/Use</td>
+<td>Read/Write</td>
+</tr>
+<tr>
+<td>Answer</td>
+<td>The value of the field (e.g. the answer to the question). For the Calendar type the value can be represented via "moment object" or a date object.<br><br>Answer should be considered Read-Only and only updated by using the setAnswer method.</td>
+<td>R</td>
+</tr>
+<tr>
+<td>answerUI</td>
+<td>The date representation displayed in the Calendar question (i.e. 2022-09-14)</td>
+<td>R</td>
+</tr>
+<tr>
+<td>class</td>
+<td>The CSS style class(es) applied to the field on the form (See section on Defining and Using Classes)</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>ClientID</td>
+<td>The ID of the element on the form. This is the attribute that is used to reference any element on the form. The ClientID for a field can be changed on the configuration screen. It is recommended that the default long numeric ID is changed to something more meaningful, so it is easier to identify when scripting. The best time to do this is when the field is initially created. A given ClientID should be used only one time on the form (it should be unique within a given form). (See also: id)</td>
+<td>R</td>
+</tr>
+<tr>
+<td>disabled</td>
+<td>Set to either true or false. If true, the field is disabled and cannot be selected or changed.</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>events</td>
+<td>Contains any script bound to the onFocus, onBlur, and onChange events of the field on the form. These events are emitted similar to the corresponding standard HTML events.</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>id</td>
+<td>The system-assigned field ID linked to the field<br>(see also: ClientID)</td>
+<td>R</td>
+</tr>
+<tr>
+<td>isdirty</td>
+<td>Indicates whether the value in the field has been changed since the form was loaded. Returns true if the value has been changed, false if it has not.</td>
+<td>R</td>
+</tr>
+<tr>
+<td>Label</td>
+<td>The label text shown on the form for the field.</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>originalAnswer</td>
+<td>The value of the field when the form initially loads.</td>
+<td>R</td>
+</tr>
+<tr>
+<td>QuestionType</td>
+<td>ShortText, LongText, Number, Hyperlink, EmailAddress, Calendar</td>
+<td>R</td>
+</tr>
+<tr>
+<td>readonly</td>
+<td>Set to either true or false. If true, the field can be selected but the value cannot be changed.</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>setAnswer()</td>
+<td>Method that sets the date for a Calendar type question. Date should be in YYYY-MM-DD format or can be a Date object.</td>
+<td></td>
+</tr>
+<tr>
+<td>show</td>
+<td>Indicates whether the question field should be shown on the form (true/false)</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>todaysDate</td>
+<td>Contains the current server date in the format MM/DD/YYYY. It can be useful for obtaining a date that is not dependent on a user's local system date.</td>
+<td>R</td>
+</tr>
+<tr>
+<td>validation</td>
+<td>The validation values and messages used when a form submitted. They correspond to the Validation tab on the question's configuration screen.<br>- futureDatesOnly -- true/false value<br>- regExMessage – The message displayed when the regEx validation fails.<br>- regEx – The regEx expression to use validate the field value.<br>- maxDate – A maximum date value that is used to compare the field value against.<br>- maxMessage – The message displayed when the naxDate validation fails.<br>- minDate – A minimum value that is used to compare the field value against.<br>- minMessage – The message displayed when the Min validation fails.<br>- required (true/false) – Indicates whether the field is required. Setting this to true will also trigger the display of the required field indicator (\*).<br>- requiredMessage – The message displayed when the required validation fails.</td>
+<td>RW</td>
+</tr>
+</table>
+### Question Type: Select List
+<table header-row="true">
+<colgroup>
+<col>
+<col width="515">
+<col width="95">
+</colgroup>
+<tr>
+<td>Property/Method</td>
+<td>Description/Use</td>
+<td>Read/Write</td>
+</tr>
+<tr>
+<td>Answer</td>
+<td>The value of the item selected in the list. Comma separated values if multiple answers are selected. If the field has no value it can be either null or an empty string.<br><br>Note that this is a comma delimited list, so Answer values cannot contain commas.</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>Choices</td>
+<td>Array of objects containing the Label/Value pairs contained in the drop-down list. Note that when updating this list via script you need to only populate the Label and Value properties, the other properties are only used in Form Design.</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>class</td>
+<td>The style class(es) applied to the field on the form (See section on Defining and Using Classes)</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>ClientID</td>
+<td>The ID of the html element on the form</td>
+<td>R</td>
+</tr>
+<tr>
+<td>disabled</td>
+<td>Set to either true or false. If true, the field is disabled and cannot be selected or changed.</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>events</td>
+<td>Contains any script bound to the onFocus, onBlur, and onChange events of the field on the form. These events are emitted similar to the corresponding standard HTML events.</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>flex</td>
+<td>The width % applied to the question on the form. This value is in relation to the container that contains the question field on the form.</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>id</td>
+<td>The system-assigned field ID linked to the field<br>(see also: ClientID)</td>
+<td>R</td>
+</tr>
+<tr>
+<td>isdirty</td>
+<td>Indicates whether the value in the field has been changed since the form was loaded. Returns true if the value has been changed, false if it has not.</td>
+<td>R</td>
+</tr>
+<tr>
+<td>Label</td>
+<td>The label shown on the form for the question</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>multiple</td>
+<td>Indicates whether multiple selections are allowed (true/false)</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>multiChoiceAnswer</td>
+<td>Array of value selected when multiple=true</td>
+<td></td>
+</tr>
+<tr>
+<td>originalAnswer</td>
+<td>The value of the field when the form initially loads.</td>
+<td>R</td>
+</tr>
+<tr>
+<td>QuestionType</td>
+<td>DbSelectList</td>
+<td>R</td>
+</tr>
+<tr>
+<td>readonly</td>
+<td>Set to either true or false. If true, the field can be selected but the value cannot be changed.</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>show</td>
+<td>Indicates whether the question field should be shown on the form (true/false)</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>validation</td>
+<td>The validation values and messages used when a form submitted. They correspond to the Validation tab on the question's configuration screen.<br>- required (true/false) – Indicates whether the field is required. Setting this to true will also trigger the display of the required field indicator (\*).<br>- requiredMessage – The message displayed when the required validation fails.</td>
+<td>RW</td>
+</tr>
+</table>
+### Question Type: Checkboxes
+<table header-row="true">
+<colgroup>
+<col>
+<col width="513">
+<col width="96">
+</colgroup>
+<tr>
+<td>Property/Method</td>
+<td>Description/Use</td>
+<td>Read/Write</td>
+</tr>
+<tr>
+<td>Answer</td>
+<td>Comma-space separated list of the values of the selected checkboxes. If the field has no value it can be either null or an empty string. If you are setting the value of a checkbox within script, then you must set both the Answer value and set the Selected attribute of the corresponding Choices.<br><br>Note that this is a comma delimited list, so Answer values cannot contain commas.</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>Choices</td>
+<td>An array of objects corresponding to the checkboxes. Each object contains the following:<br>- Label – the label of the individual checkbox<br>- Selected (true/false) – Indicates whether the checkbox is displayed as checked (true) or not checked (false). If the checkbox has never been checked then this attribute is undefined.<br>- Value – the value of the individual checkbox that is stored in Answer if the checkbox is selected<br>Note that when updating this list via script you need to only populate the Label and Value properties, the other properties are only used in Form Design.</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>class</td>
+<td>The style class(es) applied to the field on the form (See section on Defining and Using Classes)</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>ClientID</td>
+<td>The ID of the html element on the form</td>
+<td>R</td>
+</tr>
+<tr>
+<td>columnOrRow</td>
+<td>Indicates horizontal (row) or vertical (column) checkbox orientation</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>disabled</td>
+<td>Set to either true or false. If true, the field is disabled and cannot be selected or changed.</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>events</td>
+<td>Contains any script bound to the onFocus, onBlur, and onChange events of the field on the form. These events are emitted similar to the corresponding standard HTML events.</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>flex</td>
+<td>The width % applied to the question on the form. This value is in relation to the container that contains the question field on the form.</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>id</td>
+<td>The system-assigned field ID linked to the field<br>(see also: ClientID)</td>
+<td>R</td>
+</tr>
+<tr>
+<td>isDirty</td>
+<td>Indicates whether the value in the field has been changed since the form was loaded. Returns true if the value has been changed, false if it has not.</td>
+<td>R</td>
+</tr>
+<tr>
+<td>Label</td>
+<td>The label shown on the form for the question</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>originalAnswer</td>
+<td>The value of the field when the form initially loads.</td>
+<td>R</td>
+</tr>
+<tr>
+<td>QuestionType</td>
+<td>DbCheckbox</td>
+<td>R</td>
+</tr>
+<tr>
+<td>readonly</td>
+<td>Set to either true or false. If true, the field can be selected but the value cannot be changed.</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>show</td>
+<td>Indicates whether the question field should be shown on the form (true/false)</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>validation</td>
+<td>The validation values and messages used when a form submitted. They correspond to the Validation tab on the question's configuration screen.<br>- required (true/false) – Indicates whether the field is required. Setting this to true will also trigger the display of the required field indicator (\*).<br>- requiredMessage – The message displayed when the required validation fails.</td>
+<td>RW</td>
+</tr>
+</table>
+### Question Type: Radio Buttons
+<table header-row="true">
+<colgroup>
+<col>
+<col width="508">
+<col width="98">
+</colgroup>
+<tr>
+<td>Property/Method</td>
+<td>Description/Use</td>
+<td>Read/Write</td>
+</tr>
+<tr>
+<td>Answer</td>
+<td>The value of the selected radio button. If no radio button is selected the value will be null.</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>Choices</td>
+<td>An array of objects corresponding to the radio buttons. Each object contains the following:<br>- Label – the label of the individual checkbox<br>- Value – the value of the individual checkbox that is stored in Answer if the checkbox is selected<br>Note that when updating this list via script you need to only populate the Label and Value properties, the other properties are only used in Form Design.</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>class</td>
+<td>The style class(es) applied to the question on the form (See section on Defining and Using Classes)</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>ClientID</td>
+<td>The ID of the html element on the form</td>
+<td>R</td>
+</tr>
+<tr>
+<td>disabled</td>
+<td>Set to either true or false. If true, the field is disabled and cannot be selected or changed.</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>events</td>
+<td>Contains any script bound to the onFocus, onBlur, and onChange events of the field on the form. These events are emitted similar to the corresponding standard HTML events.</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>flex</td>
+<td>The width % applied to the question on the form. This value is in relation to the container that contains the question field on the form.</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>id</td>
+<td>The system-assigned field ID linked to the field<br>(see also: ClientID)</td>
+<td>R</td>
+</tr>
+<tr>
+<td>isDirty</td>
+<td>Indicates whether the value in the field has been changed since the form was loaded. Returns true if the value has been changed, false if it has not.</td>
+<td>R</td>
+</tr>
+<tr>
+<td>Label</td>
+<td>The label shown on the form for the question</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>originalAnswer</td>
+<td>The value of the field when the form initially loads.</td>
+<td>R</td>
+</tr>
+<tr>
+<td>QuestionType</td>
+<td>DbRadioButton</td>
+<td>R</td>
+</tr>
+<tr>
+<td>readonly</td>
+<td>Set to either true or false. If true, the field can be selected but the value cannot be changed.</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>show</td>
+<td>Indicates whether the question field should be shown on the form (true/false)</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>validation</td>
+<td>The validation values and messages used when a form submitted. They correspond to the Validation tab on the question's configuration screen.<br>- required (true/false) – Indicates whether the field is required. Setting this to true will also trigger the display of the required field indicator (\*).<br>- requiredMessage – The message displayed when the required validation fails.</td>
+<td>RW</td>
+</tr>
+</table>
+### Question Type: File Attachment
+<table header-row="true">
+<colgroup>
+<col>
+<col width="509">
+<col width="96">
+</colgroup>
+<tr>
+<td>Property/Method</td>
+<td>Description/Use</td>
+<td>Read/Write</td>
+</tr>
+<tr>
+<td>Answer</td>
+<td>An array of objects, one for each file attachment, with the following elements:<br>- file_key – a unique value assigned to the file attachment<br>- lastModifiedDate – the last modified date and time of the file<br>- name – the file name<br>- size – the size of the file<br>- text – the file name text displayed on the form<br>- type – the file type designator (e.g. image/jpeg)</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>class</td>
+<td>The style class(es) applied to the question on the form (See section on Defining and Using Classes)</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>ClientID</td>
+<td>The ID of the html element on the form (see also id)</td>
+<td>R</td>
+</tr>
+<tr>
+<td>disabled</td>
+<td>Set to either true or false. If true, the field is disabled and cannot be selected or changed.</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>events</td>
+<td>Contains any script bound to the onFocus, onBlur, and onChange events of the field on the form. These events are emitted similar to the corresponding standard HTML events.</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>flex</td>
+<td>The width % applied to the question on the form. This value is in relation to the container that contains the question field on the form.</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>id</td>
+<td>The system-assigned field ID linked to the field<br>(see also: ClientID)</td>
+<td>R</td>
+</tr>
+<tr>
+<td>isDirty</td>
+<td>Indicates whether the value in the field has been changed since the form was loaded. Returns true if the value has been changed, false if it has not.</td>
+<td>R</td>
+</tr>
+<tr>
+<td>Label</td>
+<td>The label shown on the form for the question</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>multiple</td>
+<td>If true, selection of multiple file attachments is allowed, else false</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>QuestionType</td>
+<td>FileAttachment or MultiFileAttachment</td>
+<td>R</td>
+</tr>
+<tr>
+<td>readonly</td>
+<td>Set to either true or false. If true, the field can be selected/file opened but the value cannot be changed.</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>show</td>
+<td>Indicates whether the question field should be shown on the form (true/false)</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>validation</td>
+<td>The validation values and messages used when a form submitted. They correspond to the Validation tab on the question's configuration screen.<br>- requiredMessage – The message displayed when the Required validation fails.</td>
+<td>RW</td>
+</tr>
+</table>
+### Question Type: Contact Search
+<table header-row="true">
+<colgroup>
+<col>
+<col width="505">
+<col width="99">
+</colgroup>
+<tr>
+<td>Property/Method</td>
+<td>Description/Use</td>
+<td>Read/Write</td>
+</tr>
+<tr>
+<td>Answer</td>
+<td>An array of objects, one for each contact selected. Each object contains:<br>- Email – contacts email address<br>- ID – contact ID<br>- Name – the name from the contact profile<br>- SID – contact SID<br>- Title – the title of the user<br>- UserName – the Workflow user name<br>- text – the contact name displayed on the form</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>class</td>
+<td>The style class(es) applied to the question on the form (See section on Defining and Using Classes)</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>ClientID</td>
+<td>The ID of the html element on the form</td>
+<td>R</td>
+</tr>
+<tr>
+<td>disabled</td>
+<td>Indicates whether the question field on the form is set to disabled (true/false)</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>events</td>
+<td>Contains any script for the onFocus, onBlur, and onChange events bound to the question field on the form.</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>flex</td>
+<td>The width % applied to the question on the form. This value is in relation to the container that contains the question field on the form.</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>id</td>
+<td>The system-assigned field ID linked to the field<br>(see also: ClientID)</td>
+<td>R</td>
+</tr>
+<tr>
+<td>isDirty</td>
+<td>Indicates whether the value in the field has been changed since the form was loaded. Returns true if the value has been changed, false if it has not.</td>
+<td>R</td>
+</tr>
+<tr>
+<td>Label</td>
+<td>The label shown on the form for the question</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>originalAnswer</td>
+<td>The value of the field when the form initially loads.</td>
+<td>R</td>
+</tr>
+<tr>
+<td>QuestionType</td>
+<td>ContactSearch, MultiContactSearch</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>searchFilter</td>
+<td>An array containing the SID (0) and name (1) of the contact search group filter</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>show</td>
+<td>Indicates whether the question field should be shown on the form (true/false)</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>validation</td>
+<td>The validation values and messages used when a form submitted. They correspond to the Validation tab on the question's configuration screen.<br>- requiredMessage – The message displayed when the Required validation fails.</td>
+<td>RW</td>
+</tr>
+</table>
+### Question Type: Search Box
+<table header-row="true">
+<colgroup>
+<col>
+<col width="502">
+<col width="101">
+</colgroup>
+<tr>
+<td>Property/Method</td>
+<td>Description/Use</td>
+<td>Read/Write</td>
+</tr>
+<tr>
+<td>Answer</td>
+<td>The value of the selected item (see also setAnswer, clearAnswer)</td>
+<td>R</td>
+</tr>
+<tr>
+<td>Choices</td>
+<td>An array of Label/Value pairs that are available in the Search Box list (for non-db-derived results)</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>class</td>
+<td>The style class(es) applied to the question on the form (See section on Defining and Using Classes)</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>clearAnswer</td>
+<td>Method to clear the label/value settings and update the field display (see also setAnswer)</td>
+<td></td>
+</tr>
+<tr>
+<td>ClientID</td>
+<td>The ID of the html element on the form</td>
+<td>R</td>
+</tr>
+<tr>
+<td>dbSettings</td>
+<td>An object containing the data source, query and mapping information.<br>- DbSourceLabelColumn—The column name from the db source to use as the Label<br>- DbSourceValueColumn—The column name from the db source to use as the Value<br>- hideSearchResultFields—List of column names returned by the db source to exclude from the displayed list.<br>- SID—The SID of the db source used<br>- Mappings—An array containing ClientID and ColumnName pairs for mapping other columns in the query results to fields on the form</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>disabled</td>
+<td>Set to either true or false. If true, the field is disabled and cannot be selected or changed.</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>events</td>
+<td>Contains any script for the onFocus, onBlur, and onChange events bound to the question field on the form.</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>flex</td>
+<td>The width % applied to the question on the form. This value is in relation to the container that contains the question field on the form.</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>friendlyAnswer</td>
+<td>The LABEL that is displayed in the field when a selection is made.</td>
+<td>R</td>
+</tr>
+<tr>
+<td>id</td>
+<td>The system-assigned field ID linked to the field<br>(see also: ClientID)</td>
+<td>R</td>
+</tr>
+<tr>
+<td>isDirty</td>
+<td>Indicates whether the value in the field has been changed since the form was loaded. Returns true if the value has been changed, false if it has not.</td>
+<td>R</td>
+</tr>
+<tr>
+<td>Label</td>
+<td>The label shown on the form for the question</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>originalAnswer</td>
+<td>The value of the field when the form initially loads.</td>
+<td>R</td>
+</tr>
+<tr>
+<td>QuestionType</td>
+<td>SearchBox</td>
+<td>R</td>
+</tr>
+<tr>
+<td>readonly</td>
+<td>Set to either true or false. If true, the field can be selected but the value cannot be changed.</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>setAnswer</td>
+<td>Method to set the values of the Answer and Label and related attributes. You must supply a json object containing the keys Label and Value. (e.g. setAnswer( \{"Value": 712, Label: "HR"\} ) )</td>
+<td></td>
+</tr>
+<tr>
+<td>show</td>
+<td>Indicates whether the question field should be shown on the form (true/false)</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>validation</td>
+<td>The validation values and messages used when a form submitted. They correspond to the Validation tab on the question's configuration screen.<br>- requiredMessage – The message displayed when the Required validation fails.</td>
+<td>RW</td>
+</tr>
+</table>
+### Question Type: Rich Text
+<table header-row="true">
+<colgroup>
+<col>
+<col width="501">
+<col width="101">
+</colgroup>
+<tr>
+<td>Property/Method</td>
+<td>Description/Use</td>
+<td>Read/Write</td>
+</tr>
+<tr>
+<td>Answer</td>
+<td>HTML tagged content that has been entered into the field. This can contain standard HTML elements, such as tables, links, images, etc.</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>class</td>
+<td>The style class(es) applied to the question on the form (See section on Defining and Using Classes)</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>ClientID</td>
+<td>The ID of the html element on the form</td>
+<td>R</td>
+</tr>
+<tr>
+<td>disabled</td>
+<td>Indicates whether the question field on the form is set to disabled (true/false)</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>events</td>
+<td>Contains any script for the onBlur, and onChange events bound to the question field on the form.</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>flex</td>
+<td>The width % applied to the question on the form. This value is in relation to the container that contains the question field on the form.</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>id</td>
+<td>The system-assigned field ID linked to the field<br>(see also: ClientID)</td>
+<td>R</td>
+</tr>
+<tr>
+<td>isDirty</td>
+<td>Indicates whether the value in the field has been changed since the form was loaded. Returns true if the value has been changed, false if it has not.</td>
+<td>R</td>
+</tr>
+<tr>
+<td>Label</td>
+<td>The label shown on the form for the question</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>loaded</td>
+<td>Indicates the Question has initialized and any prefill data has been set. true/false</td>
+<td>R</td>
+</tr>
+<tr>
+<td>QuestionType</td>
+<td>RichText</td>
+<td>R</td>
+</tr>
+<tr>
+<td>show</td>
+<td>Indicates whether the question field should be shown on the form (true/false)</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>validation</td>
+<td>The validation values and messages used when a form submitted. They correspond to the Validation tab on the question's configuration screen.<br>- requiredMessage – The message displayed when the Required validation fails.</td>
+<td>RW</td>
+</tr>
+</table>
+### Question Type: Time Zone
+<table header-row="true">
+<colgroup>
+<col>
+<col width="499">
+<col width="102">
+</colgroup>
+<tr>
+<td>Property/Method</td>
+<td>Description/Use</td>
+<td>Read/Write</td>
+</tr>
+<tr>
+<td>Answer</td>
+<td>Contains the name of the selected time zone.</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>class</td>
+<td>The style class(es) applied to the question on the form (See section on Defining and Using Classes)</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>ClientID</td>
+<td>The ID of the html element on the form</td>
+<td>R</td>
+</tr>
+<tr>
+<td>disabled</td>
+<td>Indicates whether the question field on the form is set to disabled (true/false)</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>events</td>
+<td>Contains any script for the onFocus, onBlur, and onChange events bound to the question field on the form.</td>
+<td></td>
+</tr>
+<tr>
+<td>flex</td>
+<td>The width % applied to the question on the form. This value is in relation to the container that contains the question field on the form.</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>id</td>
+<td>The system-assigned field ID linked to the field<br>(see also: ClientID)</td>
+<td>R</td>
+</tr>
+<tr>
+<td>isDirty</td>
+<td>Indicates whether the value in the field has been changed since the form was loaded. Returns true if the value has been changed, false if it has not.</td>
+<td>R</td>
+</tr>
+<tr>
+<td>Label</td>
+<td>The label shown on the form for the question</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>originalAnswer</td>
+<td>The value of the field when the form initially loads.</td>
+<td>R</td>
+</tr>
+<tr>
+<td>QuestionType</td>
+<td>TimeZone</td>
+<td>R</td>
+</tr>
+<tr>
+<td>show</td>
+<td>Indicates whether the question field should be shown on the form (true/false)</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>validation</td>
+<td>The validation values and messages used when a form submitted. They correspond to the Validation tab on the question's configuration screen.<br>- requiredMessage – The message displayed when the Required validation fails.</td>
+<td>RW</td>
+</tr>
+</table>
+### Question Type: Password
+<table header-row="true">
+<colgroup>
+<col>
+<col width="497">
+<col width="104">
+</colgroup>
+<tr>
+<td>Property/Method</td>
+<td>Description/Use</td>
+<td>Read/Write</td>
+</tr>
+<tr>
+<td>Answer</td>
+<td>Contains the password value entered (see also ConfirmPassword)</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>class</td>
+<td>The style class(es) applied to the question on the form (See section on Defining and Using Classes)</td>
+<td>R</td>
+</tr>
+<tr>
+<td>clearAnswer</td>
+<td>Method that clears both the Answer and ConfirmPassword attributes</td>
+<td>R</td>
+</tr>
+<tr>
+<td>ClientID</td>
+<td>The ID of the html element on the form</td>
+<td>R</td>
+</tr>
+<tr>
+<td>ConfirmPassword</td>
+<td>Contains the Confirm Password value entered (see also Answer)</td>
+<td>R</td>
+</tr>
+<tr>
+<td>disabled</td>
+<td>Indicates whether the question field on the form is set to disabled (true/false)</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>events</td>
+<td>Contains any script for the onFocus, onBlur, and onChange events bound to the question field on the form.</td>
+<td></td>
+</tr>
+<tr>
+<td>flex</td>
+<td>The width % applied to the question on the form. This value is in relation to the container that contains the question field on the form.</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>id</td>
+<td>The system-assigned field ID linked to the field<br>(see also: ClientID)</td>
+<td>R</td>
+</tr>
+<tr>
+<td>isDirty</td>
+<td>Indicates whether the value in the field has been changed since the form was loaded. Returns true if the value has been changed, false if it has not.</td>
+<td>R</td>
+</tr>
+<tr>
+<td>Label</td>
+<td>The label shown on the form for the question</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>QuestionType</td>
+<td>Password</td>
+<td>R</td>
+</tr>
+<tr>
+<td>show</td>
+<td>Indicates whether the question field should be shown on the form (true/false)</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>validation</td>
+<td>The validation values and messages used when a form submitted. They correspond to the Validation tab on the question's configuration screen.<br>- regExMessage – The message displayed when the regEx validation fails.<br>- regEx – The regEx expression to use validate the field value.<br>- Max – A maximum length value that is used to compare the field value against.<br>- maxMessage – The message displayed when the Max validation fails.<br>- Min – A minimum length value that is used to compare the field value against.<br>- minMessage – The message displayed when the Min validation fails.<br>- required (true/false) – Indicates whether the field is required. Setting this to true will also trigger the display of the required field indicator (\*).<br>- requiredMessage – The message displayed when the required validation fails.</td>
+<td>RW</td>
+</tr>
+</table>
+### Question Type: Grid
+<table header-row="true">
+<colgroup>
+<col>
+<col width="497">
+<col width="106">
+</colgroup>
+<tr>
+<td>Property/Method</td>
+<td>Description/Use</td>
+<td>Read/Write</td>
+</tr>
+<tr>
+<td>addRow()</td>
+<td>Method that adds a new row object to the grid (see getRowObject())</td>
+<td></td>
+</tr>
+<tr>
+<td>Answer</td>
+<td>An array of JSON objects. Contains the data entered for the rows in the grid. The JSON object label/key is the name given to the column in the grid. The JSON object value is either a discrete data value or an object (e.g. MultiChoiceSelectList column).<br><br>Each answer also has a delete property (true/false) which indicates the status of the checkbox for each row/answer in the grid.</td>
+<td>R</td>
+</tr>
+<tr>
+<td>class</td>
+<td>The style class(es) applied to the question on the form (See section on Defining and Using Classes)</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>ClientID</td>
+<td>The ID of the HTML element on the form. Used to reference the question with script.</td>
+<td>R</td>
+</tr>
+<tr>
+<td>events</td>
+<td>onChange (onBlur and onFocus not yet implemented)<br>The change event for the grid; returns an object containing data about the change made to the row.</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>flex</td>
+<td>The width % applied to the question on the form. This value is in relation to the container that contains the question field on the form.</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>getFooterValues()</td>
+<td>Returns an array of JSON objects containing the grid footer columns, or if supplied a column key returns the value of that column's footer. Each array object contains: name, value, and aggregationType.</td>
+<td></td>
+</tr>
+<tr>
+<td>getRowObject()</td>
+<td>Method that returns an empty row object that matches the column definition. It's used in conjunction with the addRow method to insert new rows into the grid.</td>
+<td></td>
+</tr>
+<tr>
+<td>[gridOptions.data](http://gridOptions.data)</td>
+<td>Contains an array of row objects for the row data contained in the grid</td>
+<td>R</td>
+</tr>
+<tr>
+<td>isdirty</td>
+<td>true/false</td>
+<td></td>
+</tr>
+<tr>
+<td>Label</td>
+<td>The label shown on the form for the question</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>loaded</td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>show</td>
+<td>Indicates whether the question field should be shown on the form (true/false)</td>
+<td>RW</td>
+</tr>
+<tr>
+<td>showDeleteButton(bool)</td>
+<td>Hides/Shows the Delete button for the grid (true/false)</td>
+<td></td>
+</tr>
+<tr>
+<td>showDeleteColumn(bool)</td>
+<td>Hides/Shows the selection checkboxes for each row in the grid (true/false)</td>
+<td></td>
+</tr>
+<tr>
+<td>showLabel</td>
+<td>Hides/Shows the label for the grid (true/false)</td>
+<td>RW</td>
+</tr>
+</table>
+---
+## Important Note
+The Workflow form object, intForm, is the supported scripting object for accessing and working with a Workflow form created in the Form Designer. You can access all the form fields (aka Questions) and layout objects via the intForm object. This Reference Manual provides a guide to all supported properties and methods available to a form developer for making truly powerful and intelligent Workflow forms.
+<callout icon="⚠️" color="orange_bg">
+	**NOTE:** Workflow form fields have other properties and methods which may be discovered by a form developer while developing a form. Properties and methods not included in this Reference Manual are *not supported* for form scripting, and their functionality may change, or be eliminated entirely, as part of any Workflow software release.
+</callout>
+---
+## Property/Method Usage Summary Table
+The same properties and methods are available for most Workflow form fields. Some field types may have unique properties, due to the functionality provided by that field type. Some properties or methods may function slightly differently for some field types, again due to that field's specific functionality. This table summarizes the availability and usage exceptions for each of the Workflow form field types.
+### Table Notes:
+**Y** indicates the property is valid for the field/question type, **N** indicates the property is not valid for the field/question type.
+**Answer Initialization/Clear Values:**
+- **null** = field initializes to/clears to null
+- **ᴓ** = empty string
+- **\[ \]** = empty array
+- **0** = zero
+**Numbered Notes:**
+1. For ContactSearch *Answer* is an Array. Within each item in the array is an object for the selected user(s) with the following properties: Email, ID, Name, SID, Title, UserName, r, selected, text. Answer is empty array if there is no selection.
+2. File Attachment *Answer* is an array of File objects, each with attributes of file_key, lastModified, lastModifiedDate, name, size, text, type, webkitRelativePath. Answer is an empty array if no file has been selected.
+3. Calendar type question *validation* is an object containing the following: futureDatesOnly (true/false), maxDate, mdDateFilter, minDate, required (true/false), requiredMessage
+4. For Calendar type questions, Answer is null if no date has been entered/selected. Answer is a date object and should not be changed directly. Use setAnswer(YYYY-MM-DD) to change the date value. You can also pass in a Date object that has been set to the desired date.
+5. Select List fields that have no selection, or the selection has been cleared, can be either null or empty string, even for multi-selection. For multiple selections the selected values in Answer are stored as a comma separated list.
+6. For File Attachment and Contact Search types, checking the "Allow Multiples" checkbox changes the Question Type, but for Select List a *multiple* attribute is added and set to true.
+7. For Grid questions, Answer is an Array. If no rows have been added, then Answer is an empty array. The array will contain json objects with the names being the defined column names. You should not directly modify the value of the Answer for Grid questions, use the getRow() and addRow() functions.
+8. LongText is backslash encoded. Use standard backslash codes, such as n for a carriage return, to include non-displayed control characters.
+9. Number initializes and clears to null, unless a currency format is selected and then it initializes and clears to the value 0.
+10. RichText field does not support the onFocus event.
+---
+## Code Examples
+### Hiding and Showing Questions
+All Questions support the **show** attribute. This attribute's value is either true or false. Setting it to true will show the Question on the form, setting it to false will hide the question on the form. Note that even if a Question is hidden (show=false) it still exists on the form, so the Answer will still be saved when the form is submitted, and you can reference the Question in your scripts.
+```javascript
+intForm.getElementByClientID('radQuarter').show = false;
+```
+### Read-Only and Disabling/Enabling
+Most Questions support the **disabled** attribute. This attribute's value is either true or false. Setting it to true will disable the question on the form, preventing any changes to the Question by the user. If a Question is disabled the user is also prevented from selecting the text of the Answer.
+### Getting and Setting the Answer
+### Simple form type answers (Short Text, Long Text, Number, Link, SelectList, RadioButton, Email, TimeZone)
+The Answer contains only the text of the answer. You can get the value of Answer directly or set the value directly.
+```javascript
+let fName = intForm.getElementByClientID('stxtFirstName').Answer
+let lName = intForm.getElementByClientID('stxtLastName').Answer
+let fullName = fName + ' ' + lName
+intForm.getElementByClientID('stxtFullName').Answer = fullName;
+```
+### Checkboxes
+```javascript
+intForm.getElementByClientID('ckGroup').Answer = '245'
+
+intForm.getElementByClientID('ckGroup').Choices[3].Selected=true;
+```
+**Helper function for setting Checkboxes Answer:**
+```javascript
+function setCheckbox(q,a) {
+    //q is the ClientID of the Question; a is the Answer value to set
+    //if the value of a does not exist in the array of Choices, no action is taken
+    if(q && a) {
+        let targ=intForm.getElementByClientID(q);
+        let i=targ.Choices.findIndex(el=>el.Value===a);
+        if(i > -1){
+            targ.Choices[i].Selected=true;
+            targ.Answer=a;
+        }
+    }
+}
+```
+### Calendar
+Always use the **setAnswer** method to set the value of Answer of a Calendar question. You can supply a static date string as the argument:
+```javascript
+intForm.getElementByClientID('calStartDate').setAnswer('08-28-2022');
+```
+This isn't usually realistic, as the desired date is usually calculated. Create a standard Date object and set the date value as appropriate (refer to your ECMA documentation). Use the created Date object as the argument of the setAnswer method:
+```javascript
+let sd = new Date('08-28-2022');
+intForm.getElementByClientID('calStartDate').setAnswer(sd);
+```
+### Grid
+The value of Answer for a Grid Question is an array of objects representing each row in the grid. You must use the **getRowObject()** and **addRow()** methods to add rows to a Grid Question. The getRowObject method returns an empty json object with keys matching the column names of the grid.
+<callout icon="ℹ️" color="blue_bg">
+	**NOTE:** In the 24 Feb 2023 release the grid data structure was changed to add a "name" key to each column definition. The "name" is a unique identifier for each column and must be used when referencing columns in your script. A new "displayName" key was also added, which is the text used as the column header. On grid columns added prior to this update the "name" will be the same as the original column name, on columns added after the release the "name" will be a unique identifier (GUID) value.
+</callout>
+```javascript
+let newRow = intForm.getElementByClientID('grdItems').getRowObject();
+
+newRow["colItemCode"] = 'WD9930-33';
+newRow["itemDesc"] = 'Advanced Widget';
+newRow["itemPrice"] = '2430.12';
+
+intForm.getElementByClientID('grdItems').addRow(newRow);
+```
+**Removing rows from a Grid Question:**
+Use the standard array methods to remove rows from the Answer array. For example, to remove the 4th row (arrays are 0 based):
+```javascript
+intForm.getElementByClientID('grdItems').splice(3,1);
+```
+### Form State
+```javascript
+if (intForm.formState === 'completed') {
+    doSomething();
+} else if (intForm.formState === 'preview') {
+    doSomething();
+} else if (intForm.formState === 'runtime') {
+    doSomething();
+};
+```
+</content>
+</page>

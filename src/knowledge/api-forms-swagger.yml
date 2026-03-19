@@ -1,0 +1,655 @@
+openapi: 3.0.0
+info:
+  title: forms service
+  version: '1.0'
+components:
+  securitySchemes:
+    bearerAuth:            # arbitrary name for the security scheme
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    integrifySystemToken: 
+      type: apiKey
+      in: header
+      name: integrify-system-token
+  schemas:
+    CreateFormResult:
+      type: object
+      properties: 
+        name:
+          type: string
+        description:
+          type: string
+        sid:
+          type: string
+        categoryName:
+          type: string
+        categorySid: 
+          type: string
+        createdDate:
+          type: string
+        isTemplate:
+          type: boolean
+        version:
+          type: number
+        layout:
+          type: array
+        rules:
+          type: array
+        script:
+          type: string
+        css:
+          type: string
+    FormSearchResult:
+      type: object
+      properties: 
+        name:
+          type: string
+        description:
+          type: string
+        sid:
+          type: string
+        categoryName:
+          type: string
+        categorySid: 
+          type: string
+        modifiedDate:
+          type: string
+        createdDate:
+          type: string
+        isTemplate:
+          type: string
+        version:
+          type: string
+    FormRule:
+      type: object
+      properties:
+        name: 
+           type: string
+        uiJson: 
+          type: string
+        ruleString: 
+          type: string
+        flattenedRuleFacts: 
+          type: array
+          items:
+            type: string 
+        event:
+          type: object
+        conditions: 
+          type: object
+    FormQuestion:
+      type: object
+      properties:
+        id: 
+          type: string 
+        show: 
+          type: boolean
+        type: 
+          type: string 
+        label: 
+          type: string 
+        validation: 
+          type: string 
+        displayName: 
+          type: string 
+                           
+    Form:
+      type: object
+      properties:   
+        name: 
+          type: string
+        sid: 
+          type: string
+        categorySid: 
+          type: string
+        isTemplate:
+          type: boolean
+        layout:  
+          type: array
+        script: 
+          type: string
+        css: 
+          type: string
+        createdDate: 
+          type: string
+        createdBy: 
+          type: string
+        modifiedDate: 
+          type: string
+        modifiedBy: 
+          type: string
+        deletedDate: 
+          type: string
+        deletedBy: 
+          type: string
+        rules: 
+          type: array
+          items:
+            "$ref": "#/components/schemas/FormRule"
+        version: 
+          type: integer
+        versionOf: 
+          type: string
+
+    FormLeaf:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        leaf:
+          type: boolean  
+    IntegrifyException: 
+      type: object
+      properties:
+        status:
+          type: integer
+        message:
+          type: string
+        description:
+          type: string
+        stack:
+          type: string
+paths:
+  /api/forms/create:
+    post: 
+      tags:
+        - "forms"
+      security:
+        - bearerAuth: []
+        - integrifySystemToken: []
+      summary: "create new form"
+      operationId: "createForm"
+      requestBody:
+        content:
+          'application/json':
+            schema:
+              type: object
+              properties:
+                wcf:
+                  type: object
+                  properties: 
+                    Name:
+                      type: string
+                    PowerFormType:
+                      type: string
+                    CategorySID:
+                      type: string      
+                    Version:
+                      type: number
+                  required: 
+                    - Name
+                    - CategorySID
+                node:
+                  type: object
+                  properties:
+                    name:
+                      type: string
+                    description:
+                      type: string
+                    categorySid:
+                      type: string                    
+                    isTemplate:
+                      type: boolean
+                    layout:
+                      type: array
+                    version:
+                      type: number
+                  required: 
+                    - name
+                    - categorySid
+              description : form details
+      responses:
+        200:
+          description: "success"
+          content:
+            application/json:
+              schema:
+                type: object
+                $ref: '#/components/schemas/CreateFormResult'
+        400:
+          description: "Bad Request"
+          content: 
+            'application/json':
+              schema: 
+                $ref: "#/components/schemas/IntegrifyException" 
+              example: {"status":400,"message":"Bad Request"}
+        403:
+          description: "Forbidden"
+          content: 
+            'application/json':
+              schema: 
+                $ref: "#/components/schemas/IntegrifyException" 
+              example: {"status":403,"message":"Forbidden","description":"permission denied"}  
+        500:
+          description: "Internal Server Error"
+          content: 
+            'application/json':
+              schema: 
+                $ref: "#/components/schemas/IntegrifyException" 
+              example: {"status":500,"message":"Internal Server Error"}
+  /api/forms/import:
+    post: 
+      tags:
+        - "forms"
+      security:
+        - bearerAuth: []
+        - integrifySystemToken: []
+      summary: "import a form"
+      operationId: "importForm"
+      requestBody:
+        content:
+          'application/json':
+            schema:
+              type: object
+              properties:
+                importFile:
+                  type: object
+                  properties: 
+                    text:
+                      type: string
+                    file_key:
+                      type: string 
+                  required: 
+                    - text
+                    - file_key
+                wcf:
+                  type: object
+                  properties:
+                    Name: 
+                      type: string
+                    Description:
+                      type: string
+                    CategorySID:
+                      type: string
+                    PowerFormType:
+                      type: string
+                  required: 
+                    - name
+                    - categorySid
+                node:
+                  type: object
+                  properties:
+                    name:
+                      type: string       
+                    description:
+                      type: string
+                    categorySid:
+                      type: string
+ 
+                    isTemplate:
+                      type: boolean
+                  required: 
+                  - name
+                  - categorySid
+      responses:
+        200:
+          description: "success"
+          content:
+            application/json:
+              schema:
+                type: object
+                $ref: '#/components/schemas/CreateFormResult'
+        400:
+          description: "Bad Request"
+          content: 
+            'application/json':
+              schema: 
+                $ref: "#/components/schemas/IntegrifyException" 
+              example: {"status":400,"message":"Bad Request"}
+        403:
+          description: "Forbidden"
+          content: 
+            'application/json':
+              schema: 
+                $ref: "#/components/schemas/IntegrifyException" 
+              example: {"status":403,"message":"Forbidden","description":"permission denied"}  
+        500:
+          description: "Internal Server Error"
+          content: 
+            'application/json':
+              schema: 
+                $ref: "#/components/schemas/IntegrifyException" 
+              example: {"status":500,"message":"Internal Server Error"}
+  /api/forms/bulkInsert:
+    post: 
+      tags:
+        - "forms"
+      security:
+        - bearerAuth: []
+        - integrifySystemToken: []
+      summary: "bulk insert forms"
+      operationId: "bulkInsert"
+      requestBody:
+        content:
+          'application/json':
+            schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Form'
+      responses:
+        200:
+          description: "success"
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    sid:
+                      type: string
+        400:
+          description: "Bad Request"
+          content: 
+            'application/json':
+              schema: 
+                $ref: "#/components/schemas/IntegrifyException" 
+              example: {"status":400,"message":"Bad Request"}
+        403:
+          description: "Forbidden"
+          content: 
+            'application/json':
+              schema: 
+                $ref: "#/components/schemas/IntegrifyException" 
+              example: {"status":403,"message":"Forbidden","description":"permission denied"}  
+        500:
+          description: "Internal Server Error"
+          content: 
+            'application/json':
+              schema: 
+                $ref: "#/components/schemas/IntegrifyException" 
+              example: {"status":500,"message":"Internal Server Error"}
+  /api/forms/search:
+    get: 
+      tags:
+        - "forms"
+      security:
+        - bearerAuth: []
+        - integrifySystemToken: []
+      summary: "search forms"
+      operationId: "searchForms"
+      parameters:
+
+        - in: query
+          name: search
+          schema:
+            type: string
+          required: false
+          description: search phrase applied to form name or form description
+
+        - in: query
+          name: start
+          schema:
+            type: string
+          required: false
+          description: Where to start search results for server-side pagination
+
+        - in: query
+          name: limit
+          schema:
+            type: string
+          required: false
+          description: Limits the number of search results to return for server-side pagination
+
+        - in: query
+          name: sort
+          schema:
+            type: string
+            enum: [name, description, categoryName, modifiedDate, createdDate]
+          required: false
+          description: Column/Property Name to sort by
+
+        - in: query
+          name: dir
+          schema:
+            type: string
+            enum: [asc, desc]
+          required: false
+          description: Sort Direction, Ascending or Descending
+
+      responses:
+        200:
+          description: "success"
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/FormSearchResult'
+
+        400:
+          description: "Bad Request"
+          content: 
+            'application/json':
+              schema: 
+                $ref: "#/components/schemas/IntegrifyException" 
+              example: {"status":400,"message":"Bad Request"}
+
+        403:
+          description: "Forbidden"
+          content: 
+            'application/json':
+              schema: 
+                $ref: "#/components/schemas/IntegrifyException" 
+              example: {"status":403,"message":"Forbidden","description":"permission denied"}
+        
+        500:
+          description: "Internal Server Error"
+          content: 
+            'application/json':
+              schema: 
+                $ref: "#/components/schemas/IntegrifyException" 
+              example: {"status":500,"message":"Internal Server Error"}
+
+  /api/forms/lastUpdateForms:
+    get:
+      tags:
+        - "forms"
+      security:
+        - bearerAuth: [ ]
+        - integrifySystemToken: [ ]
+      summary: "get lastUpdateForms from redis"
+      operationId: "getLastUpdateForms"
+      responses:
+        200:
+          description: "success"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  lastUpdateForms:
+                    type: number
+                  lastUpdateCategories:
+                    type: number
+        400:
+          description: "Bad Request"
+          content:
+            'application/json':
+              schema:
+                $ref: "#/components/schemas/IntegrifyException"
+              example: { "status": 400,"message": "Bad Request" }
+        403:
+          description: "Forbidden"
+          content:
+            'application/json':
+              schema:
+                $ref: "#/components/schemas/IntegrifyException"
+              example: { "status": 403,"message": "Forbidden","description": "permission denied" }
+        500:
+          description: "Internal Server Error"
+          content:
+            'application/json':
+              schema:
+                $ref: "#/components/schemas/IntegrifyException"
+              example: { "status": 500,"message": "Internal Server Error" }
+
+  /api/forms/asleaves:
+    get:
+      tags:
+        - "forms"
+      security:
+        - bearerAuth: []
+        - integrifySystemToken: []
+      summary: "get forms as leaves (for the tree)"
+      operationId: "getFormsAsTreeLeaves"
+      parameters:
+        - in: query
+          name: formSids
+          schema:
+            type: string
+          required: true
+      responses:
+        200:
+          description: "success"
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/FormLeaf"
+        400:
+          description: "Bad Request"
+          content: 
+            'application/json':
+              schema: 
+                $ref: "#/components/schemas/IntegrifyException" 
+              example: {"status":400,"message":"Bad Request"}
+        403:
+          description: "Forbidden"
+          content: 
+            'application/json':
+              schema: 
+                $ref: "#/components/schemas/IntegrifyException" 
+              example: {"status":403,"message":"Forbidden","description":"permission denied"}  
+        500:
+          description: "Internal Server Error"
+          content: 
+            'application/json':
+              schema: 
+                $ref: "#/components/schemas/IntegrifyException" 
+              example: {"status":500,"message":"Internal Server Error"}
+
+  /api/forms/{formSids}:
+    get:
+      tags:
+        - "forms"
+      security:
+        - bearerAuth: []
+        - integrifySystemToken: []
+      summary: "get a form"
+      operationId: "getForms"
+      parameters:
+        - in: path
+          name: formSids
+          schema:
+            type: array
+            items:
+              type: string
+          required: true
+          description: array of form sids
+        - in: query
+          name: processSid
+          schema:
+            type: string
+          description: SID for the process being executed at runtime. User must have permssion to run the process containing this form.
+      responses:
+        200:
+          description: "success"
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Form'
+        400:
+          description: "Bad Request"
+          content: 
+            'application/json':
+              schema: 
+                $ref: "#/components/schemas/IntegrifyException" 
+              example: {"status":400,"message":"Bad Request"}
+
+        403:
+          description: "Forbidden"
+          content: 
+            'application/json':
+              schema: 
+                $ref: "#/components/schemas/IntegrifyException" 
+              example: {"status":403,"message":"Forbidden","description":"permission denied"}
+        404:
+          description: "No Found"
+          content: 
+            'application/json':
+              schema: 
+                $ref: "#/components/schemas/IntegrifyException" 
+              example: {"status":404,"message":"Not Found"}
+        
+        500:
+          description: "Internal Server Error"
+          content: 
+            'application/json':
+              schema: 
+                $ref: "#/components/schemas/IntegrifyException" 
+              example: {"status":500,"message":"Internal Server Error"}
+  /api/forms/{formSid}/questions:
+    get: 
+      tags:
+        - "forms"
+      security:
+        - bearerAuth: []
+        - integrifySystemToken: []
+      summary: "get a form's questions"
+      operationId: "getFormQuestions"
+      parameters:
+        - in: path
+          name: formSid
+          schema:
+            type: string
+          required: true
+          description: form sid
+
+      responses:
+        200:
+          description: "success"
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/FormQuestion'
+        400:
+          description: "Bad Request"
+          content: 
+            'application/json':
+              schema: 
+                $ref: "#/components/schemas/IntegrifyException" 
+              example: {"status":400,"message":"Bad Request"}
+
+        403:
+          description: "Forbidden"
+          content: 
+            'application/json':
+              schema: 
+                $ref: "#/components/schemas/IntegrifyException" 
+              example: {"status":403,"message":"Forbidden","description":"permission denied"}
+        404:
+          description: "No Found"
+          content: 
+            'application/json':
+              schema: 
+                $ref: "#/components/schemas/IntegrifyException" 
+              example: {"status":404,"message":"Not Found"}
+        
+        500:
+          description: "Internal Server Error"
+          content: 
+            'application/json':
+              schema: 
+                $ref: "#/components/schemas/IntegrifyException" 
+              example: {"status":500,"message":"Internal Server Error"}

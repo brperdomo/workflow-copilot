@@ -1,0 +1,47 @@
+{
+  "manifest_version": 3,
+  "name": "Workflow Copilot",
+  "version": "0.1.0",
+  "description": "AI-powered assistant for Nutrient Workflow API setup, integrations, and RESTful form elements",
+  "permissions": [
+    "activeTab",
+    "sidePanel",
+    "storage",
+    "tabs",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://*.on-nutrient.io/*",
+    "https://*.nutrient.io/*"
+  ],
+  "background": {
+    "service_worker": "src/background/service-worker.js"
+  },
+  "side_panel": {
+    "default_path": "src/sidebar/sidebar.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.on-nutrient.io/workflow/admin/*",
+        "https://*.on-nutrient.io/workflow/*"
+      ],
+      "js": ["src/content/context-detector.js"],
+      "css": ["styles/content.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "Workflow Copilot",
+    "default_icon": {
+      "16": "public/icons/icon16.png",
+      "48": "public/icons/icon48.png",
+      "128": "public/icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "public/icons/icon16.png",
+    "48": "public/icons/icon48.png",
+    "128": "public/icons/icon128.png"
+  }
+}
