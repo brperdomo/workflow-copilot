@@ -1451,31 +1451,45 @@ Inside layout: sections[] → .contents[] (containers) → .columns[] → .items
 - Number: numFieldName
 When the user says "under First Name", use afterClientId: "txtFirstName". You can infer ClientIDs from field labels using these conventions.
 
-**Correct field object example (for add-field-to-form "field" param):**
+**Field object templates by QuestionType (use these EXACT structures):**
+
+ShortText / LongText / EmailAddress / Password:
 \`\`\`json
-{
-  "id": "new_field_1",
-  "ClientID": "stxt_MiddleName",
-  "type": "Question_Type",
-  "Label": "Middle Name",
-  "QuestionType": "ShortText",
-  "displayName": "Short Text",
-  "show": true,
-  "class": "",
-  "flex": 100,
-  "validation": {"required": false, "requiredMessage": null, "min": null, "minMessage": null, "max": null, "maxMessage": null, "regEx": null, "regExMessage": null},
-  "events": {"onFocus": null, "onBlur": null},
-  "Choices": null,
-  "Answer": null,
-  "columnOrRow": null,
-  "multiple": null,
-  "dbSettings": null,
-  "gridOptions": null,
-  "formtext": null,
-  "placeholder": null,
-  "helpText": null
-}
+{"id":"new_1","ClientID":"txtFieldName","type":"Question_Type","Label":"Field Label","QuestionType":"ShortText","displayName":"Short Text","show":true,"class":"","flex":100,"validation":{"required":false,"requiredMessage":null,"min":null,"minMessage":null,"max":null,"maxMessage":null,"regEx":null,"regExMessage":null},"events":{"onChange":null,"onFocus":null,"onBlur":null},"Choices":null,"Answer":null,"columnOrRow":null,"multiple":null,"dbSettings":null,"gridOptions":null,"formtext":null,"placeholder":null,"helpText":null}
 \`\`\`
+For LongText: QuestionType:"LongText", displayName:"Long Text", prefix ltxt_
+For EmailAddress: QuestionType:"EmailAddress", displayName:"Email", prefix eml_
+For Password: QuestionType:"Password", displayName:"Password", prefix pwd_
+
+Radio Buttons (QuestionType is "DbRadioButton" NOT "RadioButtons"):
+\`\`\`json
+{"id":"new_2","ClientID":"radFieldName","type":"Question_Type","Label":"Field Label","QuestionType":"DbRadioButton","displayName":"Radio Buttons","show":true,"class":"","flex":100,"columnOrRow":"row","dbSettings":{"useDB":false},"validation":{"required":false,"requiredMessage":"This field is required","min":null,"minMessage":null,"max":null,"maxMessage":null,"regEx":null,"regExMessage":null},"events":{"onChange":null,"onFocus":null,"onBlur":null},"Choices":[{"Label":"Option 1","Value":"option1"},{"Label":"Option 2","Value":"option2"}],"Answer":null,"multiple":null,"gridOptions":null,"formtext":null,"placeholder":null,"helpText":null}
+\`\`\`
+
+Checkboxes (QuestionType is "DbCheckbox"):
+\`\`\`json
+{"id":"new_3","ClientID":"chkFieldName","type":"Question_Type","Label":"Field Label","QuestionType":"DbCheckbox","displayName":"Checkboxes","show":true,"class":"","flex":100,"columnOrRow":"row","dbSettings":{"useDB":false},"validation":{"required":false,"requiredMessage":null,"min":null,"minMessage":null,"max":null,"maxMessage":null,"regEx":null,"regExMessage":null},"events":{"onChange":null,"onFocus":null,"onBlur":null},"Choices":[{"Label":"Option 1","Value":"option1","Selected":false}],"Answer":null,"multiple":null,"gridOptions":null,"formtext":null,"placeholder":null,"helpText":null}
+\`\`\`
+
+Select List (QuestionType is "DbSelectList"):
+\`\`\`json
+{"id":"new_4","ClientID":"ddlFieldName","type":"Question_Type","Label":"Field Label","QuestionType":"DbSelectList","displayName":"Select List","show":true,"class":"","flex":100,"dbSettings":{"useDB":false},"validation":{"required":false,"requiredMessage":null,"min":null,"minMessage":null,"max":null,"maxMessage":null,"regEx":null,"regExMessage":null},"events":{"onChange":null,"onFocus":null,"onBlur":null},"Choices":[{"Label":"Option 1","Value":"option1"}],"Answer":null,"columnOrRow":null,"multiple":false,"gridOptions":null,"formtext":null,"placeholder":null,"helpText":null}
+\`\`\`
+
+Calendar: QuestionType:"Calendar", displayName:"Calendar", prefix cal_
+Number: QuestionType:"Number", displayName:"Number", prefix num_
+File Attachment: QuestionType:"FileAttachment", displayName:"File Attachment", prefix fa_
+Signature: QuestionType:"Signature", displayName:"Signature", prefix sig_
+
+**CRITICAL QuestionType values** (use these EXACTLY — the display name differs from the internal type):
+- Radio Buttons → QuestionType: "DbRadioButton" (NOT "RadioButtons")
+- Checkboxes → QuestionType: "DbCheckbox" (NOT "Checkbox" or "Checkboxes")
+- Select List → QuestionType: "DbSelectList" (NOT "SelectList")
+- Email → QuestionType: "EmailAddress" (NOT "Email")
+- Long Text → QuestionType: "LongText" (NOT "Textarea")
+- Short Text → QuestionType: "ShortText"
+- Calendar → QuestionType: "Calendar"
+- Number → QuestionType: "Number"
 
 **Composite Actions (multi-step):**
 - \`setup-slack-integration\` — params: slackToken, channelId, [credentialName], [requestName]
