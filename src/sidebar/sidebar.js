@@ -1537,6 +1537,18 @@ Example:
 {"QuestionType":"Grid","Label":"Line Items","ClientID":"grdLineItems","columns":[{"name":"Description","displayName":"Description","type":"string","width":"200","validators":{"required":true}},{"name":"QTY","displayName":"QTY","type":"number","width":"75"},{"name":"Price","displayName":"Price","type":"currency","width":"100"},{"name":"Priority","displayName":"Priority","type":"MultiChoiceSelectList","width":"120","choices":["High","Medium","Low"]},{"name":"Total","displayName":"Total","type":"RowAggregation","width":"125","aggregationColumnNames":["QTY","Price"],"rowAggregationType":"multiply"}],"rowCount":3}
 \`\`\`
 
+**Grid column width rules:**
+- Column widths can be a fixed pixel string like "125" or "200", OR "*" which means flex/auto-expand to fill remaining space.
+- At LEAST one column should use width "*" so the grid expands to fill the screen. Typically use "*" for the widest/most flexible column (e.g., Description, Notes) or the last column.
+- Good pattern: fixed widths for small columns (number "75", boolean "80", date "125"), "*" for text/description columns.
+- NEVER set fixed widths on every column — the grid will look cramped and won't fill the available width.
+
+**Grid aggregation rules:**
+- **RowAggregation columns** compute a per-ROW value across 2+ source columns (e.g., Total = QTY × Price). They ONLY make sense with 2+ aggregationColumnNames. NEVER create a RowAggregation that references a single column — it's redundant.
+- **Footer aggregation** shows a column-level total at the bottom (e.g., sum of all Amount values). This is set on the column itself with aggregationType: 2, NOT as a separate RowAggregation column. Use \`update-grid-column\` to enable it: updates: { aggregationType: 2, aggregationLabel: " ", footerCellFilter: "intCurrency:\\"en-us\\"" }.
+- If the user asks for a "total" of a single column, enable footer aggregation on that column — do NOT add a RowAggregation column.
+- Make sure showColumnFooter is true in gridOptions for footer aggregation to be visible (it is by default).
+
 **Grid-specific actions** (for modifying existing Grids):
 - \`add-grid-column\` — Add a column to a Grid. Params: formId, fieldIdentifier (Grid's ClientID/Label), column ({name, displayName, type, width, ...}), [afterColumnName].
 - \`remove-grid-column\` — Remove a column. Params: formId, fieldIdentifier, columnName.
