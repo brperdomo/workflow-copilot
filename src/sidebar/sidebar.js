@@ -6,6 +6,7 @@ import { HELP_CENTER } from '../knowledge/help-center.js';
 import {
   ACTION_REGISTRY,
   ActionEngine,
+  actionLog,
   buildConfirmationHTML,
   buildProgressHTML,
   buildResultHTML,
@@ -17,6 +18,7 @@ let currentContext = { page: 'unknown' };
 let chatHistory = [];
 let apiCatalog = null;
 let pendingActions = []; // Actions awaiting user confirmation
+let undoButtonStack = []; // Stack of undo buttons — only the last one is visible
 let settings = {
   aiConnectionId: '',
   aiConnectionName: '',
@@ -54,6 +56,7 @@ const $$ = (sel) => document.querySelectorAll(sel);
 document.addEventListener('DOMContentLoaded', async () => {
   await loadSettings();
   initActionEngine();
+  await actionLog.load();
   await loadApiCatalog();
   setupEventListeners();
   requestContext();
@@ -432,6 +435,15 @@ function addMessage(content, role) {
     // Check for executable action blocks in the response
     if (actionEngine) {
       const actions = actionEngine.parseActionsFromResponse(content);
+      // Auto-inject formId from context if the LLM omitted it
+      if (currentContext.entityId) {
+        for (const a of actions) {
+          if (!a.params.formId && ACTION_REGISTRY[a.actionId]?.requiredParams?.includes('formId')) {
+            a.params.formId = currentContext.entityId;
+            a._formIdAutoInjected = true;
+          }
+        }
+      }
       if (actions.length > 0) {
         // Render the text part (without action blocks)
         const textContent = actionEngine.stripActionBlocks(content);
@@ -493,6 +505,9 @@ async function autoExecuteActions(actions, container) {
     container.appendChild(statusEl);
 
     try {
+      // Track formId source for the action log
+      actionEngine._pendingFormIdSource = action._formIdAutoInjected ? 'auto-injected' : (action.params.formId ? 'llm-provided' : 'missing');
+
       const result = await actionEngine.executeAction(action.actionId, action.params);
       statusEl.innerHTML = buildResultHTML(result);
 
@@ -500,9 +515,15 @@ async function autoExecuteActions(actions, container) {
       if (result.success && actionDef.category === 'forms' && actionDef.steps.some(s => s.method !== 'GET')) {
         await refreshFormBuilder();
 
-        // Add undo button if we have a backup
+        // Add undo button — only the most recent action's undo is visible
         const formId = action.params.formId;
         if (formId && actionEngine.getBackup(formId)) {
+          // Hide the previous undo button if there is one
+          if (undoButtonStack.length > 0) {
+            const prevBtn = undoButtonStack[undoButtonStack.length - 1];
+            prevBtn.style.display = 'none';
+          }
+
           const undoBtn = document.createElement('button');
           undoBtn.className = 'action-undo-btn';
           undoBtn.innerHTML = '↩ Undo this change';
@@ -513,14 +534,24 @@ async function autoExecuteActions(actions, container) {
               actionEngine.baseUrl = settings.baseUrl || await getBaseUrl();
               await actionEngine.restoreBackup(formId);
               await refreshFormBuilder();
-              undoBtn.textContent = '✅ Restored!';
+              undoBtn.textContent = '✅ Undone';
               undoBtn.style.background = 'var(--success)';
+
+              // Remove this button from the stack
+              undoButtonStack.pop();
+
+              // Reveal the previous undo button if there is one
+              if (undoButtonStack.length > 0) {
+                const prevBtn = undoButtonStack[undoButtonStack.length - 1];
+                prevBtn.style.display = '';
+              }
             } catch (err) {
               undoBtn.textContent = `❌ Restore failed: ${err.message}`;
               undoBtn.disabled = false;
             }
           });
           statusEl.appendChild(undoBtn);
+          undoButtonStack.push(undoBtn);
         }
       }
 
@@ -747,6 +778,10 @@ function buildContext(userMessage) {
 
   if (currentContext.entityName) {
     context += `Currently editing: ${currentContext.entityName}\n`;
+  }
+
+  if (currentContext.entityId) {
+    context += `Entity/Form SID (use as formId): ${currentContext.entityId}\n`;
   }
 
   if (currentContext.url) {
@@ -1412,12 +1447,14 @@ You have the ability to execute actions directly in the user's Workflow environm
 - \`create-form\` — params: name, [description]
 - \`create-form-with-layout\` — params: name, layout (full JSON)
 - \`add-field-to-form\` — Add a single question/field. Params: formId, field (question object with type:"Question_Type"), [afterClientId].
+- \`rename-section\` — Rename an existing section. Params: formId, sectionClientId (use current label!), newLabel. Use this when the user says "rename", "relabel", or "change the name of" a section.
 - \`add-section-to-form\` — Add a new layout section. Params: formId, sectionLabel, [insertAfterSectionIndex], [containerColumns], [fields].
 - \`add-container-to-section\` — **Add a container to an EXISTING section.** Params: formId, sectionClientId (the ClientID of the target section), columns (number of columns, e.g. 2), [fields] (optional field objects to put in it). Use this when the user asks to add a multi-column container to a section that already exists.
-- \`move-fields-to-new-section\` — Move existing fields to a NEW section. Params: formId, fieldClientIds (array of ClientIDs), newSectionLabel, [insertAfterSectionIndex], [containerColumns], [fieldsPerColumn].
-- \`move-fields-to-container\` — Move existing fields to an EXISTING container. Params: formId, fieldClientIds (array of ClientIDs to move), targetSectionClientId, [targetContainerIndex] (0-based), [targetColumnIndex] (0-based).
+- \`move-fields-to-new-section\` — Move existing fields to a NEW section. Params: formId, fieldClientIds (array of field ClientIDs OR Labels — the engine matches by either), newSectionLabel, [insertAfterSectionIndex], [containerColumns], [fieldsPerColumn].
+- \`move-fields-to-container\` — Move existing fields to an EXISTING container. Params: formId, fieldClientIds (array of field ClientIDs OR Labels — e.g. ["Phone Number", "Email"] works just as well as ["txtPhoneNumber", "emlEmail"]), targetSectionClientId, [targetContainerIndex] (0-based), [targetContainerColumns] (find container by column count, e.g. 2 for the 2-column container — **prefer this over targetContainerIndex when the user references a container by its column count**), [targetColumnIndex] (0-based).
 - \`reorder-sections\` — Reorder sections on the form. Params: formId, sectionOrder (array of section ClientIDs in desired order).
 - \`reorder-containers\` — Reorder containers within a section. Params: formId, sectionClientId, containerOrder (array of container ClientIDs in desired order).
+- \`resize-container\` — Change the number of columns in an existing container. Params: formId, sectionClientId, newColumnCount, PLUS one of: [containerColumns] (find by current column count), [containerContainsField] (find by field ClientID/label inside it), [containerIndex] (0-based). When adding columns, empty columns are appended. When reducing, fields from removed columns are moved to the last remaining column. **Use this when the user wants to convert a 1-column container to 2-column (or vice versa) before moving fields.**
 - \`move-container-to-section\` — Move an entire container (with all fields) between sections. Params: formId, targetSectionClientId (use section label!), PLUS one of these to identify the source container (in priority order):
   (a) sourceSectionClientId + sourceContainerContainsField — find the container holding a specific field by ClientID or label. **BEST for disambiguation.** E.g., "the container with First Name" → sourceContainerContainsField:"txtFirstName"
   (b) sourceSectionClientId + sourceContainerColumns — find by column count. E.g., sourceContainerColumns:2
@@ -1432,7 +1469,10 @@ You have the ability to execute actions directly in the user's Workflow environm
 - NEVER create a question with QuestionType="Section" — sections are layout elements, not questions.
 - When the user says "add a 2-column container to the Pets section", use add-container-to-section with the section's ClientID and columns:2.
 - Section ClientIDs look like timestamps ending in "s" (e.g. "1773951418087s"). Get them from get-form-json or infer from context.
-- \`update-form-layout\` — params: formId, node (the FULL form object)
+- **Container identification**: When the user references a container by column count (e.g. "the 2-column container"), use targetContainerColumns/sourceContainerColumns instead of guessing a container index. When the user references a container by a field it contains, use sourceContainerContainsField. Avoid using index-based targeting unless explicitly requested.
+- **Sanity-check requests**: Before executing, verify the request is logically possible. A 1-column container only has column index 0 — you CANNOT place fields in "the second column" of a 1-column container. If the user asks for something impossible, explain why and suggest alternatives (e.g., "That container only has 1 column. I can first resize it to 2 columns with \`resize-container\`, then move the fields."). If the user agrees, use \`resize-container\` first, then \`move-fields-to-container\` as a second action. NEVER fabricate a successful result for an impossible operation.
+- \`update-field\` — **Update properties of an existing field in place.** Params: formId, fieldIdentifier (ClientID or Label of the field), updates (object of properties to merge). The engine finds the field and deep-merges your updates — it does NOT replace the field, only changes the keys you specify. Use this to configure RESTful Elements, change labels, update validation, set dbSettings, etc. Example: to configure a RESTful Element's API call, use updates: { dbSettings: { restRequest: { method: "POST", url: "...", ... } } }.
+- **NEVER use update-form-layout** — it has been removed because it risks wiping the entire form. Always use targeted actions instead.
 - \`update-form-javascript\` — params: formId, node (full form object with js updated)
 - \`update-form-css\` — params: formId, node (full form object with css updated)
 
@@ -1490,6 +1530,28 @@ Signature: QuestionType:"Signature", displayName:"Signature", prefix sig_
 - Short Text → QuestionType: "ShortText"
 - Calendar → QuestionType: "Calendar"
 - Number → QuestionType: "Number"
+- RESTful Element → QuestionType: "RESTfulElement" (NOT "RestfulElement" or "RESTful")
+
+**Field Templates — the engine auto-builds full structures.** You only need to provide:
+- QuestionType, Label, ClientID (with correct prefix), and any type-specific config (Choices for radio/checkbox/select, validation, restRequest for RESTfulElement).
+- The engine fills in all required properties (displayName, show, flex, events, dbSettings, etc.) automatically.
+- For RESTfulElement: provide QuestionType:"RESTfulElement", Label, ClientID (prefix rest_), and optionally a restRequest object for pre-configuration.
+
+**RESTful Element restRequest structure** (lives at dbSettings.restRequest):
+The engine normalizes whatever you provide, but here is the target schema:
+- method: "GET"|"POST"|"PUT"|"DELETE"
+- url: full URL string
+- headers: array of {key, value, enabled:true, source:"fixed"} OR plain object {"Content-Type":"application/json"} (engine converts)
+- queryParams: same format as headers
+- auth: {type:"none"|"bearer"|"oauth2", credentialId:"...", grantType:"...", tokenUrl:"...", ...}
+- body: {type:"none"|"form"|"raw", contentType:"application/json", raw:"...", urlEncoded:[{key,value,enabled,source}]} OR plain string (engine wraps as raw) OR plain object {amount:"100"} (engine converts to urlEncoded form)
+- response: {expectedStatus:[], enableTimeout:false, timeoutDuration:30000, retryOnFailure:false, maxRetries:3, responseMode:"standard"}
+- mappings: [], envVars: []
+
+**Configuring RESTful Elements:**
+- Use \`update-field\` with fieldIdentifier and updates: { dbSettings: { restRequest: { method, url, headers, body, auth } } }.
+- If the RESTful Element does NOT exist yet, \`update-field\` will **automatically create it** when the updates contain restRequest config. No need for a separate add-field step.
+- NEVER try to configure a RESTful Element by replacing the entire form layout. Always use \`update-field\`.
 
 **Composite Actions (multi-step):**
 - \`setup-slack-integration\` — params: slackToken, channelId, [credentialName], [requestName]
@@ -1502,7 +1564,7 @@ Signature: QuestionType:"Signature", displayName:"Signature", prefix sig_
 4. Actions auto-execute immediately — the user does NOT need to approve.
 5. Use actions when the user asks you to "do", "create", "set up", "configure", "add", "move", "reorganize", etc.
 6. Use advice-only (no action block) when the user asks "how do I", "explain", "what is", etc.
-7. **SECTION IDENTIFICATION — Use LABELS, not ClientIDs!** All section-related params (sectionClientId, targetSectionClientId, sourceSectionClientId) accept EITHER a ClientID OR a section LABEL. The engine resolves labels automatically (case-insensitive). Examples: "Basic Details", "Pets", "Contact Info". This means you do NOT need get-form-json just to find section IDs — use the label directly.
+7. **SECTION IDENTIFICATION — Use LABELS, not ClientIDs!** All section-related params (sectionClientId, targetSectionClientId, sourceSectionClientId) accept EITHER a ClientID OR a section LABEL. The engine resolves labels automatically (case-insensitive). Examples: "Basic Details", "Pets", "Contact Info". This means you do NOT need get-form-json just to find section IDs — use the label directly. You can also use "Section 1", "Section 2" etc. to reference sections by position (1-based). **CRITICAL: If you call get-form-json first, you MUST use the actual labels from the JSON response, not generic names like "Section 1". Read the Label field from each section in the layout array.**
 8. For CONTAINER identification, use the position approach: sourceSectionClientId (use section label!) + sourceContainerIndex (0-based). Example: "the 2nd container in Pets" → sourceSectionClientId: "Pets", sourceContainerIndex: 1.
 9. Only use get-form-json when you need to discover what fields/sections/containers exist on the form (e.g., user says "show me the form structure" or you need field ClientIDs you can't infer).
 10. For field ClientIDs, infer from naming conventions (txtFirstName, emlEmail, calStartDate, ddlPosition).
@@ -1794,6 +1856,185 @@ async function executeApiTest() {
   });
 }
 
+// ── Action Log Panel ──
+async function showActionLog() {
+  await actionLog.load();
+  $('#actionLogPanel').classList.remove('hidden');
+  renderLogEntries();
+}
+
+function renderLogEntries() {
+  const filter = $('#logFilter')?.value || 'all';
+  let entries;
+
+  switch (filter) {
+    case 'failed':
+      entries = actionLog.query({ status: 'failed' });
+      break;
+    case 'warnings':
+      entries = actionLog.query({ hasWarnings: true });
+      break;
+    case 'success':
+      entries = actionLog.query({ status: 'success' });
+      break;
+    default:
+      entries = actionLog.query();
+  }
+
+  // Render stats
+  const stats = actionLog.getStats();
+  const statsEl = $('#logStats');
+  if (statsEl) {
+    statsEl.innerHTML = `
+      <span class="log-stat total">${stats.total} total</span>
+      <span class="log-stat success">${stats.success} success</span>
+      <span class="log-stat failed">${stats.failed} failed</span>
+      <span class="log-stat normalized">${stats.withNormalizations} fixed</span>
+      ${stats.autoCreated > 0 ? `<span class="log-stat auto-created">${stats.autoCreated} auto-created</span>` : ''}
+    `;
+  }
+
+  // Render entries
+  const container = $('#logEntries');
+  if (!container) return;
+
+  if (entries.length === 0) {
+    container.innerHTML = `
+      <div class="log-empty">
+        <div class="log-empty-icon">📊</div>
+        <p>No action log entries${filter !== 'all' ? ' matching this filter' : ' yet'}.</p>
+        <p style="font-size: 11px; margin-top: 4px; color: var(--text-muted);">Actions will be logged as you use the copilot.</p>
+      </div>
+    `;
+    return;
+  }
+
+  container.innerHTML = entries.map(entry => {
+    const time = new Date(entry.timestamp);
+    const timeStr = time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const dateStr = time.toLocaleDateString([], { month: 'short', day: 'numeric' });
+
+    // Badges
+    const badges = [];
+    if (entry.normalizations.length > 0) badges.push(`<span class="log-badge normalized">${entry.normalizations.length} fixed</span>`);
+    if (entry.warnings.length > 0) badges.push(`<span class="log-badge warning">${entry.warnings.length} warn</span>`);
+    if (entry.errors.length > 0) badges.push(`<span class="log-badge error">${entry.errors.length} err</span>`);
+    if (entry.autoCreated) badges.push(`<span class="log-badge auto-created">auto-created</span>`);
+
+    // Details sections
+    let details = '';
+
+    // Raw params
+    details += `
+      <div class="log-detail-section">
+        <h5>LLM Raw Params</h5>
+        <pre class="log-raw-params">${JSON.stringify(entry.rawParams, null, 2)}</pre>
+      </div>
+    `;
+
+    // Field resolution
+    if (entry.fieldResolution) {
+      const fr = entry.fieldResolution;
+      details += `
+        <div class="log-detail-section">
+          <h5>Field Resolution</h5>
+          <div class="log-detail-item ${fr.method === 'not found' ? 'error' : 'normalization'}">
+            <span class="label">Identifier:</span> "${fr.identifier}"
+            ${fr.method !== 'not found'
+              ? `<span class="arrow">→</span> resolved via ${fr.method} to "${fr.resolved}"`
+              : `<span class="arrow">→</span> NOT FOUND. Available: ${(fr.availableFields || []).join(', ')}`
+            }
+          </div>
+        </div>
+      `;
+    }
+
+    // Normalizations
+    if (entry.normalizations.length > 0) {
+      details += `
+        <div class="log-detail-section">
+          <h5>Auto-Corrections Applied</h5>
+          ${entry.normalizations.map(n => `
+            <div class="log-detail-item normalization">
+              <span class="label">${n.field}:</span> ${n.from} <span class="arrow">→</span> ${n.to}
+            </div>
+          `).join('')}
+        </div>
+      `;
+    }
+
+    // Warnings
+    if (entry.warnings.length > 0) {
+      details += `
+        <div class="log-detail-section">
+          <h5>Warnings</h5>
+          ${entry.warnings.map(w => `
+            <div class="log-detail-item warning">
+              ${w.message}${w.details ? `: ${w.details}` : ''}
+            </div>
+          `).join('')}
+        </div>
+      `;
+    }
+
+    // Errors
+    if (entry.errors.length > 0) {
+      details += `
+        <div class="log-detail-section">
+          <h5>Errors</h5>
+          ${entry.errors.map(e => `
+            <div class="log-detail-item error">
+              ${e.message}${e.details ? `: ${e.details}` : ''}
+            </div>
+          `).join('')}
+        </div>
+      `;
+    }
+
+    // Steps
+    if (entry.stepResults.length > 0) {
+      details += `
+        <div class="log-detail-section">
+          <h5>Steps</h5>
+          ${entry.stepResults.map(s => `
+            <div class="log-detail-item ${s.success ? '' : 'error'}">
+              ${s.success ? '✓' : '✗'} ${s.step} ${s.status ? `(HTTP ${s.status})` : ''} ${s.error ? `— ${s.error}` : ''}
+            </div>
+          `).join('')}
+        </div>
+      `;
+    }
+
+    // Duration & metadata
+    if (entry.duration !== null) {
+      details += `
+        <div class="log-detail-section">
+          <h5>Metadata</h5>
+          <div class="log-detail-item">
+            <span class="label">Duration:</span> ${entry.duration}ms
+            ${entry.backupPushed ? ' · <span class="label">Backup:</span> pushed' : ''}
+            ${entry.formIdSource ? ` · <span class="label">formId:</span> ${entry.formIdSource}` : ''}
+          </div>
+        </div>
+      `;
+    }
+
+    return `
+      <div class="log-entry" data-entry-id="${entry.id}">
+        <div class="log-entry-header" onclick="this.parentElement.classList.toggle('expanded')">
+          <span class="log-entry-status ${entry.status}"></span>
+          <span class="log-entry-action">${entry.actionLabel}</span>
+          <div class="log-entry-badges">${badges.join('')}</div>
+          <span class="log-entry-time">${dateStr} ${timeStr}</span>
+        </div>
+        <div class="log-entry-details">
+          ${details}
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
 // ── Event Listeners ──
 function setupEventListeners() {
   // Send message
@@ -1836,4 +2077,13 @@ function setupEventListeners() {
   $('#testApiBtn').addEventListener('click', showApiTester);
   $('#testBack').addEventListener('click', () => $('#apiTestPanel').classList.add('hidden'));
   $('#executeTest').addEventListener('click', executeApiTest);
+
+  // Action Log panel
+  $('#actionLogBtn').addEventListener('click', showActionLog);
+  $('#actionLogBack').addEventListener('click', () => $('#actionLogPanel').classList.add('hidden'));
+  $('#logFilter').addEventListener('change', () => renderLogEntries());
+  $('#clearLogBtn').addEventListener('click', async () => {
+    await actionLog.clear();
+    renderLogEntries();
+  });
 }

@@ -2,9 +2,202 @@
 // Handles executable actions: parses AI responses for action blocks,
 // shows confirmation UI, executes multi-step API sequences, and reports results.
 
+// ── Action Log ──
+// Captures every action lifecycle: LLM raw output → parsing → normalization → execution → result
+// Persisted to chrome.storage.local for debugging across sessions.
+class ActionLog {
+  constructor() {
+    this.entries = [];
+    this.maxEntries = 200;
+    this._loaded = false;
+  }
+
+  async load() {
+    if (this._loaded) return;
+    try {
+      const stored = await new Promise(resolve => {
+        chrome.storage.local.get('actionLog', (result) => resolve(result.actionLog || []));
+      });
+      this.entries = stored;
+      this._loaded = true;
+    } catch (e) {
+      this.entries = [];
+      this._loaded = true;
+    }
+  }
+
+  async _persist() {
+    try {
+      await new Promise(resolve => {
+        chrome.storage.local.set({ actionLog: this.entries }, resolve);
+      });
+    } catch (e) {
+      console.warn('ActionLog: Failed to persist', e);
+    }
+  }
+
+  // Create a new log entry for an action execution
+  createEntry(actionId, rawParams) {
+    const entry = {
+      id: `log_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      timestamp: new Date().toISOString(),
+      actionId,
+      actionLabel: ACTION_REGISTRY[actionId]?.label || actionId,
+      rawParams: JSON.parse(JSON.stringify(rawParams)),
+      normalizations: [],   // What the engine auto-corrected
+      warnings: [],          // Non-fatal issues detected
+      errors: [],            // Fatal errors
+      status: 'pending',     // pending → executing → success | failed | skipped
+      stepResults: [],
+      duration: null,
+      formIdSource: null,    // 'llm' | 'auto-injected' | 'missing'
+      fieldResolution: null, // How fields were resolved (by label, ClientID, partial, etc.)
+      autoCreated: false,    // Whether a field was auto-created
+      backupPushed: false    // Whether a backup was pushed to the stack
+    };
+    this.entries.push(entry);
+
+    // Trim old entries
+    if (this.entries.length > this.maxEntries) {
+      this.entries = this.entries.slice(-this.maxEntries);
+    }
+
+    return entry;
+  }
+
+  // Log a normalization that was applied
+  addNormalization(entry, field, from, to) {
+    entry.normalizations.push({
+      field,
+      from: typeof from === 'object' ? JSON.stringify(from).slice(0, 200) : String(from),
+      to: typeof to === 'object' ? JSON.stringify(to).slice(0, 200) : String(to),
+      timestamp: new Date().toISOString()
+    });
+  }
+
+  // Log a warning (non-fatal issue)
+  addWarning(entry, message, details) {
+    entry.warnings.push({ message, details: details || null, timestamp: new Date().toISOString() });
+  }
+
+  // Log an error
+  addError(entry, message, details) {
+    entry.errors.push({ message, details: details || null, timestamp: new Date().toISOString() });
+  }
+
+  // Log a step result
+  addStepResult(entry, stepName, success, data) {
+    entry.stepResults.push({
+      step: stepName,
+      success,
+      status: data?.status || null,
+      error: data?.error || null,
+      timestamp: new Date().toISOString()
+    });
+  }
+
+  // Finalize the entry
+  async finalize(entry, status) {
+    entry.status = status;
+    entry.duration = new Date() - new Date(entry.timestamp);
+    await this._persist();
+  }
+
+  // Get entries filtered by status, actionId, or time range
+  query(filter = {}) {
+    let results = [...this.entries];
+    if (filter.status) results = results.filter(e => e.status === filter.status);
+    if (filter.actionId) results = results.filter(e => e.actionId === filter.actionId);
+    if (filter.hasErrors) results = results.filter(e => e.errors.length > 0);
+    if (filter.hasWarnings) results = results.filter(e => e.warnings.length > 0 || e.normalizations.length > 0);
+    if (filter.since) results = results.filter(e => new Date(e.timestamp) >= new Date(filter.since));
+    return results.reverse(); // Most recent first
+  }
+
+  // Get summary stats
+  getStats() {
+    const total = this.entries.length;
+    const success = this.entries.filter(e => e.status === 'success').length;
+    const failed = this.entries.filter(e => e.status === 'failed').length;
+    const withNormalizations = this.entries.filter(e => e.normalizations.length > 0).length;
+    const withWarnings = this.entries.filter(e => e.warnings.length > 0).length;
+    const autoCreated = this.entries.filter(e => e.autoCreated).length;
+
+    // Group errors by type
+    const errorTypes = {};
+    for (const entry of this.entries) {
+      for (const err of entry.errors) {
+        const key = err.message.split(':')[0].trim();
+        errorTypes[key] = (errorTypes[key] || 0) + 1;
+      }
+    }
+
+    return { total, success, failed, withNormalizations, withWarnings, autoCreated, errorTypes };
+  }
+
+  // Clear all entries
+  async clear() {
+    this.entries = [];
+    await this._persist();
+  }
+}
+
+// Singleton instance
+const actionLog = new ActionLog();
+// Module-level ref to current log entry (set during executeAction, used by buildBody functions)
+let _currentLogEntry = null;
+
 // ── Action Registry ──
 // Each action defines: id, label, description, steps[] (API calls), and optional validation
 // Helper: find section by ClientID OR Label (case-insensitive)
+// Helper: check if a field matches an identifier (by ClientID or Label, case-insensitive)
+function fieldMatches(item, identifier) {
+  if (!item || !identifier) return false;
+  if (item.ClientID === identifier) return true;
+  const lower = identifier.toLowerCase();
+  if (item.Label && item.Label.toLowerCase() === lower) return true;
+  if (item.Label && item.Label.toLowerCase().replace(/\s+/g, '') === lower.replace(/\s+/g, '')) return true;
+  // Handle prefix-less match: "PhoneNumber" should match "txtPhoneNumber"
+  if (item.ClientID && item.ClientID.toLowerCase().includes(lower.replace(/\s+/g, '').toLowerCase())) return true;
+  return false;
+}
+
+// Helper: extract fields from layout by ClientID or Label, removing them from their current location
+function extractFieldsFromLayout(layout, fieldIdentifiers) {
+  const extracted = [];
+  const notFound = [];
+
+  for (const id of fieldIdentifiers) {
+    let found = false;
+    for (const section of layout) {
+      if (found) break;
+      for (const container of (section.contents || [])) {
+        if (found) break;
+        for (const column of (container.columns || [])) {
+          const idx = (column.items || []).findIndex(item => fieldMatches(item, id));
+          if (idx !== -1) {
+            const field = column.items.splice(idx, 1)[0];
+            extracted.push(field);
+            found = true;
+            if (_currentLogEntry) {
+              actionLog.addNormalization(_currentLogEntry, 'fieldResolution',
+                `identifier "${id}"`, `resolved to "${field.Label || field.ClientID}"`);
+            }
+          }
+        }
+      }
+    }
+    if (!found) {
+      notFound.push(id);
+      if (_currentLogEntry) {
+        actionLog.addWarning(_currentLogEntry, 'Field not found for extraction', `"${id}" not found in layout`);
+      }
+    }
+  }
+
+  return { extracted, notFound };
+}
+
 function findSection(layout, identifier) {
   if (!identifier) return null;
   // Try exact ClientID first
@@ -16,7 +209,280 @@ function findSection(layout, identifier) {
   if (section) return section;
   // Try partial label match
   section = layout.find(s => s.Label && s.Label.toLowerCase().includes(lower));
-  return section || null;
+  if (section) return section;
+  // Try "Section N" pattern → resolve to Nth section (1-based)
+  const sectionNumMatch = lower.match(/^section\s*(\d+)$/);
+  if (sectionNumMatch) {
+    const idx = parseInt(sectionNumMatch[1]) - 1;
+    if (idx >= 0 && idx < layout.length) return layout[idx];
+  }
+  // If only one section exists and identifier looks generic, use it
+  if (layout.length === 1 && (lower.includes('existing') || lower.includes('first') || lower.includes('current') || lower.includes('only'))) {
+    return layout[0];
+  }
+  return null;
+}
+
+// ── REST Request Normalizers ──
+// Converts headers/queryParams from various LLM formats into the correct array-of-objects format.
+// Accepts: object {"Content-Type": "..."}, array [{key, value}], or already-correct array [{key, value, enabled, source}]
+function normalizeKeyValueArray(input, _logEntry, _fieldName) {
+  if (!input) return [];
+  if (Array.isArray(input)) {
+    const result = input.map(item => ({
+      key: item.key || '',
+      value: item.value || '',
+      enabled: item.enabled !== undefined ? item.enabled : true,
+      source: item.source || 'fixed'
+    }));
+    // Log if items were missing required properties
+    const fixed = input.filter(item => !item.enabled && item.enabled !== false || !item.source);
+    if (fixed.length > 0 && _logEntry) {
+      actionLog.addNormalization(_logEntry, _fieldName || 'keyValueArray', 'items missing enabled/source', `added defaults to ${fixed.length} items`);
+    }
+    return result;
+  }
+  if (typeof input === 'object') {
+    // Convert plain object {"Content-Type": "application/json"} to array format
+    if (_logEntry) {
+      actionLog.addNormalization(_logEntry, _fieldName || 'keyValueArray',
+        `plain object with ${Object.keys(input).length} keys`,
+        `array of ${Object.keys(input).length} {key,value,enabled,source} objects`);
+    }
+    return Object.entries(input).map(([key, value]) => ({
+      key,
+      value: String(value),
+      enabled: true,
+      source: 'fixed'
+    }));
+  }
+  return [];
+}
+
+// Normalizes body from LLM format into the correct structured format.
+// Accepts: string, object with type/raw/urlEncoded, or plain key-value object
+function normalizeBody(input, _logEntry) {
+  const empty = { type: 'none', contentType: 'none', raw: '', formData: [], urlEncoded: [] };
+  if (!input) return empty;
+  if (typeof input === 'string') {
+    if (_logEntry) {
+      actionLog.addNormalization(_logEntry, 'body', 'raw string', 'structured {type:"raw", contentType:"application/json"}');
+    }
+    return { type: 'raw', contentType: 'application/json', raw: input, formData: [], urlEncoded: [] };
+  }
+  if (typeof input === 'object' && input.type) {
+    // Already structured — normalize sub-arrays
+    return {
+      type: input.type || 'none',
+      contentType: input.contentType || 'none',
+      raw: input.raw || '',
+      formData: (input.formData || []).map(item => ({
+        key: item.key || '', value: item.value || '', enabled: true, source: item.source || 'fixed'
+      })),
+      urlEncoded: (input.urlEncoded || []).map(item => ({
+        key: item.key || '', value: item.value || '', enabled: true, source: item.source || 'fixed',
+        ...(item.credentialId ? { credentialId: item.credentialId, credentialField: item.credentialField } : {})
+      }))
+    };
+  }
+  if (typeof input === 'object') {
+    if (_logEntry) {
+      actionLog.addNormalization(_logEntry, 'body',
+        `plain object with keys: ${Object.keys(input).join(', ')}`,
+        'structured {type:"form", urlEncoded:[...]}');
+    }
+    return {
+      type: 'form',
+      contentType: 'none',
+      raw: '',
+      formData: [],
+      urlEncoded: Object.entries(input).map(([key, value]) => ({
+        key,
+        value: String(value),
+        enabled: true,
+        source: 'fixed'
+      }))
+    };
+  }
+  return empty;
+}
+
+// ── Field Template Builder ──
+// Ensures all question types have the correct full structure.
+// The LLM provides minimal params; the engine builds the complete object.
+function buildFieldFromTemplate(field, _logEntry) {
+  const timestamp = Date.now().toString();
+  const base = {
+    id: field.id || 'new_' + timestamp,
+    ClientID: field.ClientID || '',
+    type: 'Question_Type',
+    Label: field.Label || '',
+    QuestionType: field.QuestionType || 'ShortText',
+    displayName: field.displayName || field.QuestionType || 'Short Text',
+    show: true,
+    class: field.class || '',
+    flex: field.flex || 100,
+    validation: field.validation || {
+      required: false,
+      requiredMessage: 'This field is required',
+      min: null, minMessage: null,
+      max: null, maxMessage: null,
+      regEx: null, regExMessage: null
+    },
+    events: field.events || { onFocus: null, onBlur: null },
+    Choices: field.Choices || null,
+    Answer: field.Answer || null,
+    columnOrRow: field.columnOrRow || null,
+    multiple: field.multiple || null,
+    dbSettings: field.dbSettings || null,
+    gridOptions: field.gridOptions || null,
+    formtext: field.formtext || null,
+    placeholder: field.placeholder || null,
+    helpText: field.helpText || null,
+    builderMode: true,
+    loaded: true,
+    isdirty: false,
+    originalAnswer: null,
+    islive: false
+  };
+
+  // ── Type-specific enrichment ──
+  const qt = base.QuestionType;
+
+  if (_logEntry) {
+    // Log what the LLM provided vs what the template will build
+    const providedKeys = Object.keys(field).filter(k => field[k] !== undefined && field[k] !== null);
+    if (providedKeys.length < 5) {
+      actionLog.addWarning(_logEntry, `Sparse field definition for ${qt}`, `LLM only provided: ${providedKeys.join(', ')}`);
+    }
+  }
+
+  if (qt === 'RESTfulElement') {
+    base.displayName = 'RESTful Element';
+    base.moduleDisabled = false;
+    base.events = field.events || { onChange: null, onBlur: null, onFocus: null, onResponse: null };
+    base.request = field.request || {};
+    base.response = field.response || null;
+
+    // Build the full restRequest structure
+    const restReq = field.restRequest || (field.dbSettings && field.dbSettings.restRequest) || {};
+    base.dbSettings = {
+      mappings: (field.dbSettings && field.dbSettings.mappings) || [],
+      useDB: false,
+      restRequest: {
+        runId: restReq.runId || null,
+        method: restReq.method || 'GET',
+        url: restReq.url || '',
+        validateSSL: restReq.validateSSL !== undefined ? restReq.validateSSL : true,
+        followRedirects: restReq.followRedirects !== undefined ? restReq.followRedirects : true,
+        maxRedirects: restReq.maxRedirects || 5,
+        persistCookies: restReq.persistCookies || false,
+        // Headers MUST be an array of {key, value, enabled, source} objects
+        headers: normalizeKeyValueArray(restReq.headers, _logEntry, 'restRequest.headers'),
+        // Query params same structure
+        queryParams: normalizeKeyValueArray(restReq.queryParams, _logEntry, 'restRequest.queryParams'),
+        auth: Object.assign({
+          type: 'none',
+          credentialId: '',
+          addTo: null,
+          usernameKeyName: 'username',
+          passwordKeyName: 'password',
+          apiKeyName: 'apiKey',
+          clientIdKeyName: 'client_id',
+          clientSecretKeyName: 'client_secret',
+          grantType: 'client_credentials',
+          tokenUrl: null,
+          scope: null
+        }, restReq.auth || {}),
+        body: normalizeBody(restReq.body, _logEntry),
+        response: Object.assign({
+          expectedStatus: [],
+          enableTimeout: false,
+          timeoutDuration: 30000,
+          retryOnFailure: false,
+          maxRetries: 3,
+          responseMode: 'standard'
+        }, restReq.response || {}),
+        mappings: restReq.mappings || [],
+        envVars: restReq.envVars || []
+      }
+    };
+  }
+
+  if (qt === 'DbRadioButton') {
+    base.displayName = 'Radio Buttons';
+    base.columnOrRow = field.columnOrRow || 'row';
+    base.dbSettings = field.dbSettings || { useDB: false };
+  }
+
+  if (qt === 'DbCheckbox') {
+    base.displayName = 'Checkboxes';
+    base.columnOrRow = field.columnOrRow || 'row';
+    base.dbSettings = field.dbSettings || { useDB: false };
+  }
+
+  if (qt === 'DbSelectList') {
+    base.displayName = 'Select List';
+    base.dbSettings = field.dbSettings || { useDB: false };
+  }
+
+  if (qt === 'Calendar') {
+    base.displayName = 'Calendar';
+    base.dateFormat = field.dateFormat || 'L';
+  }
+
+  if (qt === 'EmailAddress') {
+    base.displayName = 'Email Address';
+  }
+
+  if (qt === 'FileAttachment') {
+    base.displayName = 'File Attachment';
+  }
+
+  if (qt === 'RichText') {
+    base.displayName = 'Rich Text';
+  }
+
+  if (qt === 'Grid') {
+    base.displayName = 'Grid';
+    base.gridOptions = field.gridOptions || { columns: [], rows: [] };
+  }
+
+  if (qt === 'AIBox') {
+    base.displayName = 'AI Box';
+    base.moduleDisabled = false;
+    base.dbSettings = field.dbSettings || { mappings: [], useDB: false };
+  }
+
+  if (qt === 'Signature') {
+    base.displayName = 'Signature';
+  }
+
+  if (qt === 'Number') {
+    base.displayName = 'Number';
+  }
+
+  if (qt === 'Hyperlink') {
+    base.displayName = 'Hyperlink';
+  }
+
+  if (qt === 'Password') {
+    base.displayName = 'Password';
+  }
+
+  if (qt === 'TimeZone') {
+    base.displayName = 'Time Zone';
+  }
+
+  if (qt === 'ContactSearch') {
+    base.displayName = 'Contact Search';
+  }
+
+  if (qt === 'SearchBox') {
+    base.displayName = 'Search Box';
+  }
+
+  return base;
 }
 
 const ACTION_REGISTRY = {
@@ -416,23 +882,141 @@ const ACTION_REGISTRY = {
     ]
   },
 
-  'update-form-layout': {
-    id: 'update-form-layout',
-    label: 'Update Form Layout',
+  // update-form-layout REMOVED — too dangerous, LLM can wipe the form.
+  // Use targeted actions (update-field, add-field-to-form, etc.) instead.
+
+  'update-field': {
+    id: 'update-field',
+    label: 'Update Field Properties',
     category: 'forms',
     level: 2,
-    description: 'Update an existing form layout (add/modify fields). Sends the full form object.',
-    requiredParams: ['formId', 'node'],
-    // node is the full form object from GET /workflow/napi/tasktypes/power-form/{sid}/builder
+    description: 'Update properties of an existing field in place. Finds the field by ClientID or Label and merges the provided properties. Does NOT replace the field — only updates the keys you specify.',
+    requiredParams: ['formId', 'fieldIdentifier', 'updates'],
+    // fieldIdentifier: ClientID or Label of the field to update
+    // updates: object of properties to merge (e.g., { Label: "New Name", validation: { required: true } })
     steps: [
       {
-        name: 'Save form layout',
-        method: 'PUT',
-        // Form builder uses /workflow/napi/ prefix, not /api/
+        name: 'Fetch current form',
+        method: 'GET',
         path: (params) => `/workflow/napi/tasktypes/power-form/${params.formId}/builder`,
-        buildBody: (params) => ({
-          node: params.node // full form object with sid, sections, questions, etc.
-        })
+        buildBody: () => null,
+        extractResult: { formData: '' }
+      },
+      {
+        name: 'Update field and save',
+        method: 'PUT',
+        path: (params) => `/workflow/napi/tasktypes/power-form/${params.formId}/builder`,
+        buildBody: (params, prevResults) => {
+          const formData = prevResults._rawResponse_0 || prevResults.formData;
+          if (!formData) throw new Error('Could not retrieve form data');
+          const layout = formData.layout;
+          if (!layout) throw new Error('Form layout is missing');
+
+          // Find the field across all sections/containers/columns
+          let targetField = null;
+          let resolutionMethod = null;
+          const allFields = [];
+          for (const section of layout) {
+            for (const container of (section.contents || [])) {
+              for (const column of (container.columns || [])) {
+                for (const item of (column.items || [])) {
+                  allFields.push(item);
+                  if (!targetField && fieldMatches(item, params.fieldIdentifier)) {
+                    targetField = item;
+                    resolutionMethod = 'fieldMatches (direct/label/partial)';
+                  }
+                }
+              }
+            }
+          }
+
+          // Fallback: if identifier looks like a QuestionType, find the only field of that type
+          if (!targetField) {
+            const typeMap = {
+              'restfulelement': 'RESTfulElement', 'restful': 'RESTfulElement', 'rest': 'RESTfulElement',
+              'aibox': 'AIBox', 'grid': 'Grid', 'signature': 'Signature'
+            };
+            const lower = params.fieldIdentifier.toLowerCase().replace(/[\s_-]/g, '');
+            const matchType = typeMap[lower];
+            if (matchType) {
+              const ofType = allFields.filter(f => f.QuestionType === matchType);
+              if (ofType.length === 1) {
+                targetField = ofType[0];
+                resolutionMethod = `QuestionType fallback → ${matchType}`;
+              } else if (ofType.length > 1) {
+                if (_currentLogEntry) actionLog.addError(_currentLogEntry, 'Ambiguous field type', `Multiple ${matchType} fields: ${ofType.map(f => f.Label || f.ClientID).join(', ')}`);
+                throw new Error(`Multiple ${matchType} fields found. Specify by Label or ClientID: ${ofType.map(f => f.Label || f.ClientID).join(', ')}`);
+              }
+            }
+          }
+
+          // Fallback: if identifier contains "stripe", "salesforce", etc., search labels for partial match
+          if (!targetField) {
+            const lower = params.fieldIdentifier.toLowerCase();
+            targetField = allFields.find(f => f.Label && f.Label.toLowerCase().includes(lower));
+            if (targetField) resolutionMethod = `partial label match → "${targetField.Label}"`;
+          }
+
+          // Log how the field was resolved (or not)
+          if (_currentLogEntry) {
+            _currentLogEntry.fieldResolution = targetField
+              ? { method: resolutionMethod, resolved: targetField.Label || targetField.ClientID, identifier: params.fieldIdentifier }
+              : { method: 'not found', identifier: params.fieldIdentifier, availableFields: allFields.map(f => f.Label || f.ClientID) };
+          }
+
+          // Auto-create: if field not found and updates contain restRequest config, create a RESTful Element
+          if (!targetField && params.updates && (params.updates.dbSettings || params.updates.restRequest)) {
+            const label = params.fieldIdentifier.replace(/^rest_?/i, '').replace(/([A-Z])/g, ' $1').trim();
+            const clientId = 'rest_' + params.fieldIdentifier.replace(/[^a-zA-Z0-9]/g, '_').replace(/_+/g, '_');
+            const newField = buildFieldFromTemplate({
+              QuestionType: 'RESTfulElement',
+              Label: label || 'RESTful Element',
+              ClientID: clientId,
+              restRequest: (params.updates.dbSettings && params.updates.dbSettings.restRequest) || params.updates.restRequest
+            }, _currentLogEntry);
+
+            if (_currentLogEntry) {
+              _currentLogEntry.autoCreated = true;
+              actionLog.addWarning(_currentLogEntry, 'Auto-created RESTful Element',
+                `"${params.fieldIdentifier}" not found → created "${label}" (${clientId})`);
+            }
+
+            // Add to the last section's first container's first column
+            const lastSection = layout[layout.length - 1];
+            const container = (lastSection.contents || [])[0];
+            if (container) {
+              const column = (container.columns || [])[0];
+              if (column) {
+                if (!column.items) column.items = [];
+                column.items.push(newField);
+                return { node: formData };
+              }
+            }
+            throw new Error('Could not find a valid location to insert the new RESTful Element');
+          }
+
+          if (!targetField) {
+            if (_currentLogEntry) actionLog.addError(_currentLogEntry, 'Field not found',
+              `"${params.fieldIdentifier}" not on form. Available: ${allFields.map(f => f.Label || f.ClientID).join(', ')}`);
+            throw new Error(`Field "${params.fieldIdentifier}" not found on the form. Available fields: ${allFields.map(f => f.Label || f.ClientID).join(', ')}`);
+          }
+
+          // Deep merge the updates into the field
+          function deepMerge(target, source) {
+            for (const key of Object.keys(source)) {
+              if (source[key] && typeof source[key] === 'object' && !Array.isArray(source[key])
+                  && target[key] && typeof target[key] === 'object' && !Array.isArray(target[key])) {
+                deepMerge(target[key], source[key]);
+              } else {
+                target[key] = source[key];
+              }
+            }
+          }
+
+          deepMerge(targetField, params.updates);
+
+          return { node: formData };
+        }
       }
     ]
   },
@@ -510,32 +1094,14 @@ const ACTION_REGISTRY = {
             throw new Error('Form layout is missing or invalid');
           }
 
-          const fieldClientIds = params.fieldClientIds; // array of ClientIDs to move
-          const extractedFields = [];
-
-          // Step 1: Extract fields from their current locations
-          for (const section of layout) {
-            const contents = section.contents || [];
-            for (const container of contents) {
-              const columns = container.columns || [];
-              for (const column of columns) {
-                if (!column.items) continue;
-                // Filter out the fields we want to move, save them
-                const remaining = [];
-                for (const item of column.items) {
-                  if (fieldClientIds.includes(item.ClientID)) {
-                    extractedFields.push(item); // save the ACTUAL field object
-                  } else {
-                    remaining.push(item);
-                  }
-                }
-                column.items = remaining;
-              }
-            }
-          }
+          // Step 1: Extract fields from their current locations (by ClientID or Label)
+          const { extracted: extractedFields, notFound } = extractFieldsFromLayout(layout, params.fieldClientIds);
 
           if (extractedFields.length === 0) {
-            throw new Error(`Could not find any fields with ClientIDs: ${fieldClientIds.join(', ')}`);
+            throw new Error(`Could not find any fields: ${params.fieldClientIds.join(', ')}`);
+          }
+          if (notFound.length > 0) {
+            console.warn(`Fields not found (skipped): ${notFound.join(', ')}`);
           }
 
           // Step 2: Build the new section
@@ -614,6 +1180,41 @@ const ACTION_REGISTRY = {
     ]
   },
 
+  'rename-section': {
+    id: 'rename-section',
+    label: 'Rename Section',
+    category: 'forms',
+    level: 2,
+    description: 'Rename an existing section label.',
+    requiredParams: ['formId', 'sectionClientId', 'newLabel'],
+    steps: [
+      {
+        name: 'Fetch current form',
+        method: 'GET',
+        path: (params) => `/workflow/napi/tasktypes/power-form/${params.formId}/builder`,
+        buildBody: () => null,
+        extractResult: { formData: '' }
+      },
+      {
+        name: 'Rename section and save',
+        method: 'PUT',
+        path: (params) => `/workflow/napi/tasktypes/power-form/${params.formId}/builder`,
+        buildBody: (params, prevResults) => {
+          const formData = prevResults._rawResponse_0 || prevResults.formData;
+          if (!formData) throw new Error('Could not retrieve form data');
+          const layout = formData.layout;
+          if (!layout) throw new Error('Form layout is missing');
+
+          const section = findSection(layout, params.sectionClientId);
+          if (!section) throw new Error(`Section "${params.sectionClientId}" not found`);
+
+          section.Label = params.newLabel;
+          return { node: formData };
+        }
+      }
+    ]
+  },
+
   'add-section-to-form': {
     id: 'add-section-to-form',
     label: 'Add Section to Form',
@@ -644,9 +1245,9 @@ const ACTION_REGISTRY = {
           const timestamp = Date.now().toString();
           const numColumns = params.containerColumns || 1;
 
-          // Build columns — if fields provided, distribute them
+          // Build columns — if fields provided, run through template builder and distribute
           const columns = [];
-          const fields = params.fields || [];
+          const fields = (params.fields || []).map(f => buildFieldFromTemplate(f, _currentLogEntry));
           if (numColumns > 1 && fields.length > 0) {
             const perCol = Math.ceil(fields.length / numColumns);
             for (let c = 0; c < numColumns; c++) {
@@ -735,7 +1336,7 @@ const ACTION_REGISTRY = {
 
           const timestamp = Date.now().toString();
           const numColumns = typeof params.columns === 'number' ? params.columns : 1;
-          const fields = params.fields || [];
+          const fields = (params.fields || []).map(f => buildFieldFromTemplate(f, _currentLogEntry));
 
           // Build columns
           const cols = [];
@@ -777,7 +1378,7 @@ const ACTION_REGISTRY = {
     level: 2,
     description: 'Move existing fields (by ClientID) from their current location into a specific container in a specific section. Specify the target by sectionClientId and containerIndex (0-based). Optionally specify which column (0-based) to place them in.',
     requiredParams: ['formId', 'fieldClientIds', 'targetSectionClientId'],
-    optionalParams: ['targetContainerIndex', 'targetColumnIndex'],
+    optionalParams: ['targetContainerIndex', 'targetContainerColumns', 'targetColumnIndex'],
     steps: [
       {
         name: 'Fetch current form',
@@ -797,39 +1398,29 @@ const ACTION_REGISTRY = {
           const layout = formData.layout;
           if (!layout || !Array.isArray(layout)) throw new Error('Form layout is missing');
 
-          const fieldClientIds = params.fieldClientIds;
-          const extractedFields = [];
-
-          // Step 1: Extract fields from their current locations
-          for (const section of layout) {
-            const contents = section.contents || [];
-            for (const container of contents) {
-              const columns = container.columns || [];
-              for (const column of columns) {
-                if (!column.items) continue;
-                const remaining = [];
-                for (const item of column.items) {
-                  if (fieldClientIds.includes(item.ClientID)) {
-                    extractedFields.push(item);
-                  } else {
-                    remaining.push(item);
-                  }
-                }
-                column.items = remaining;
-              }
-            }
-          }
+          // Step 1: Extract fields from their current locations (by ClientID or Label)
+          const { extracted: extractedFields, notFound } = extractFieldsFromLayout(layout, params.fieldClientIds);
 
           if (extractedFields.length === 0) {
-            throw new Error(`Could not find fields: ${fieldClientIds.join(', ')}`);
+            throw new Error(`Could not find fields: ${params.fieldClientIds.join(', ')}`);
+          }
+          if (notFound.length > 0) {
+            console.warn(`Fields not found (skipped): ${notFound.join(', ')}`);
           }
 
           // Step 2: Find the target section and container
           const targetSection = findSection(layout, params.targetSectionClientId);
           if (!targetSection) throw new Error(`Target section "${params.targetSectionClientId}" not found`);
 
-          const containerIdx = params.targetContainerIndex || 0;
           const contents = targetSection.contents || [];
+          let containerIdx;
+          if (params.targetContainerColumns) {
+            // Find container by column count
+            containerIdx = contents.findIndex(c => (c.columns || []).length === params.targetContainerColumns);
+            if (containerIdx === -1) throw new Error(`No container with ${params.targetContainerColumns} columns found in section`);
+          } else {
+            containerIdx = params.targetContainerIndex || 0;
+          }
           if (containerIdx >= contents.length) throw new Error(`Container index ${containerIdx} out of range (section has ${contents.length} containers)`);
 
           const targetContainer = contents[containerIdx];
@@ -931,6 +1522,86 @@ const ACTION_REGISTRY = {
             if (!reordered.includes(container)) reordered.push(container);
           }
           section.contents = reordered;
+          return { node: formData };
+        }
+      }
+    ]
+  },
+
+  'resize-container': {
+    id: 'resize-container',
+    label: 'Resize Container Columns',
+    category: 'forms',
+    level: 2,
+    description: 'Change the number of columns in an existing container. Adding columns appends empty ones; reducing columns redistributes fields from removed columns into the last remaining column.',
+    requiredParams: ['formId', 'sectionClientId', 'newColumnCount'],
+    optionalParams: ['containerIndex', 'containerColumns', 'containerContainsField'],
+    steps: [
+      {
+        name: 'Fetch current form',
+        method: 'GET',
+        path: (params) => `/workflow/napi/tasktypes/power-form/${params.formId}/builder`,
+        buildBody: () => null,
+        extractResult: { formData: '' }
+      },
+      {
+        name: 'Resize container and save',
+        method: 'PUT',
+        path: (params) => `/workflow/napi/tasktypes/power-form/${params.formId}/builder`,
+        buildBody: (params, prevResults) => {
+          const formData = prevResults._rawResponse_0 || prevResults.formData;
+          if (!formData) throw new Error('Could not retrieve form data');
+          const layout = formData.layout;
+          if (!layout) throw new Error('Form layout is missing');
+
+          const section = findSection(layout, params.sectionClientId);
+          if (!section) throw new Error(`Section "${params.sectionClientId}" not found`);
+
+          const contents = section.contents || [];
+          let containerIdx;
+
+          if (params.containerContainsField) {
+            containerIdx = contents.findIndex(c =>
+              (c.columns || []).some(col =>
+                (col.items || []).some(item =>
+                  item.ClientID === params.containerContainsField || item.Label === params.containerContainsField
+                )
+              )
+            );
+            if (containerIdx === -1) throw new Error(`No container containing field "${params.containerContainsField}" found`);
+          } else if (params.containerColumns) {
+            containerIdx = contents.findIndex(c => (c.columns || []).length === params.containerColumns);
+            if (containerIdx === -1) throw new Error(`No container with ${params.containerColumns} columns found in section`);
+          } else {
+            containerIdx = params.containerIndex || 0;
+          }
+
+          if (containerIdx >= contents.length) throw new Error(`Container index ${containerIdx} out of range`);
+
+          const container = contents[containerIdx];
+          const columns = container.columns || [];
+          const currentCount = columns.length;
+          const newCount = params.newColumnCount;
+
+          if (newCount < 1) throw new Error('Column count must be at least 1');
+          if (newCount === currentCount) throw new Error(`Container already has ${currentCount} columns`);
+
+          if (newCount > currentCount) {
+            // Add empty columns
+            while (columns.length < newCount) {
+              columns.push({ items: [] });
+            }
+          } else {
+            // Shrink: move fields from removed columns into the last surviving column
+            const lastKeepIdx = newCount - 1;
+            for (let i = newCount; i < currentCount; i++) {
+              const removedItems = (columns[i].items || []);
+              columns[lastKeepIdx].items = columns[lastKeepIdx].items.concat(removedItems);
+            }
+            columns.splice(newCount);
+          }
+
+          container.columns = columns;
           return { node: formData };
         }
       }
@@ -1060,7 +1731,7 @@ const ACTION_REGISTRY = {
             throw new Error('Could not retrieve form data from previous step');
           }
 
-          const field = params.field;
+          const field = buildFieldFromTemplate(params.field, _currentLogEntry);
           const afterClientId = params.afterClientId;
           // The GET response is { _id, name, sid, layout: [...sections], script, css, rules, ... }
           // The sections array lives inside formData.layout
@@ -1274,19 +1945,26 @@ class ActionEngine {
     this.onStepProgress = options.onStepProgress || (() => {});
     this.onActionComplete = options.onActionComplete || (() => {});
     this.pendingAction = null;
-    this.formBackups = {}; // formId → backup of form JSON before modification
+    this.formBackupStacks = {}; // formId → array of snapshots (stack, most recent last)
   }
 
-  // ── Form Backup/Restore ──
+  // ── Form Backup/Restore (stack-based) ──
   getBackup(formId) {
-    return this.formBackups[formId] || null;
+    const stack = this.formBackupStacks[formId];
+    return stack && stack.length > 0 ? stack[stack.length - 1] : null;
+  }
+
+  getBackupCount(formId) {
+    return (this.formBackupStacks[formId] || []).length;
   }
 
   async restoreBackup(formId) {
-    const backup = this.formBackups[formId];
-    if (!backup) {
+    const stack = this.formBackupStacks[formId];
+    if (!stack || stack.length === 0) {
       throw new Error(`No backup found for form ${formId}`);
     }
+    // Pop the most recent snapshot (the state before the last action)
+    const backup = stack.pop();
     const fullUrl = `${this.baseUrl}/workflow/napi/tasktypes/power-form/${formId}/builder`;
     const response = await this._executeApiCall({
       method: 'PUT',
@@ -1295,14 +1973,14 @@ class ActionEngine {
       body: { node: backup }
     });
     if (response.status >= 200 && response.status < 300) {
-      // Keep backup — user might need to undo multiple actions to the same original state
-      return { success: true, message: 'Form restored to pre-modification state' };
+      const remaining = stack.length;
+      return { success: true, message: `Form restored. ${remaining} more undo${remaining !== 1 ? 's' : ''} available.` };
     }
     throw new Error(`Restore failed: HTTP ${response.status}`);
   }
 
   clearBackup(formId) {
-    delete this.formBackups[formId];
+    delete this.formBackupStacks[formId];
   }
 
   // Get action by ID
@@ -1351,9 +2029,17 @@ class ActionEngine {
             raw: match[0],
             index: match.index
           });
+        } else if (parsed.actionId) {
+          // Log unknown action IDs the LLM tried to use
+          const entry = actionLog.createEntry(parsed.actionId, parsed.params || {});
+          actionLog.addError(entry, 'Unknown action ID', `LLM emitted "${parsed.actionId}" which is not in the registry`);
+          actionLog.finalize(entry, 'failed');
         }
       } catch (e) {
-        // Not valid JSON - skip
+        // Log malformed JSON from LLM
+        const entry = actionLog.createEntry('parse-error', {});
+        actionLog.addError(entry, 'Malformed action block JSON', match[1]?.slice(0, 300));
+        actionLog.finalize(entry, 'failed');
       }
     }
 
@@ -1390,8 +2076,25 @@ class ActionEngine {
     const action = this.getAction(actionId);
     if (!action) throw new Error(`Unknown action: ${actionId}`);
 
+    // Create log entry
+    const logEntry = actionLog.createEntry(actionId, params);
+    logEntry.status = 'executing';
+
     const validation = this.validateParams(actionId, params);
-    if (!validation.valid) throw new Error(`Validation failed: ${validation.errors.join(', ')}`);
+    if (!validation.valid) {
+      actionLog.addError(logEntry, 'Validation failed', validation.errors.join(', '));
+      await actionLog.finalize(logEntry, 'failed');
+      throw new Error(`Validation failed: ${validation.errors.join(', ')}`);
+    }
+
+    // Expose logEntry so action buildBody functions can log normalizations
+    _currentLogEntry = logEntry;
+
+    // Track formId source if set by sidebar
+    if (this._pendingFormIdSource) {
+      logEntry.formIdSource = this._pendingFormIdSource;
+      this._pendingFormIdSource = null;
+    }
 
     const results = [];
     const prevResults = {};
@@ -1425,19 +2128,20 @@ class ActionEngine {
         prevResults[`_rawResponse_${i}`] = response.data;
 
         // Auto-backup: if this is a GET on a form and the action has a PUT step coming,
-        // save the form data as a backup before modification.
-        // Only save the FIRST backup — this preserves the original state before any AI modifications.
+        // push the current form state onto the backup stack before modification.
         if (step.method === 'GET' && action.category === 'forms' && response.data &&
-            action.steps.some(s => s.method === 'PUT') && params.formId &&
-            !this.formBackups[params.formId]) {
-          this.formBackups[params.formId] = JSON.parse(JSON.stringify(response.data));
+            action.steps.some(s => s.method === 'PUT') && params.formId) {
+          if (!this.formBackupStacks[params.formId]) {
+            this.formBackupStacks[params.formId] = [];
+          }
+          this.formBackupStacks[params.formId].push(JSON.parse(JSON.stringify(response.data)));
+          logEntry.backupPushed = true;
         }
 
         // Extract results for chaining
         if (step.extractResult && response.data) {
           for (const [key, path] of Object.entries(step.extractResult)) {
             if (path === '') {
-              // Empty path means extract entire response
               prevResults[key] = response.data;
             } else {
               prevResults[key] = this._getNestedValue(response.data, path);
@@ -1445,16 +2149,20 @@ class ActionEngine {
           }
         }
 
+        const stepSuccess = response.status >= 200 && response.status < 300;
         results.push({
           step: step.name,
-          success: response.status >= 200 && response.status < 300,
+          success: stepSuccess,
           status: response.status,
           data: response.data
         });
 
+        actionLog.addStepResult(logEntry, step.name, stepSuccess, { status: response.status });
+
         // Stop on failure
         if (response.status >= 400) {
           results[results.length - 1].error = `HTTP ${response.status}: ${response.statusText}`;
+          actionLog.addError(logEntry, `Step "${step.name}" failed`, `HTTP ${response.status}: ${response.statusText}`);
           break;
         }
 
@@ -1464,12 +2172,17 @@ class ActionEngine {
           success: false,
           error: err.message
         });
+        actionLog.addStepResult(logEntry, step.name, false, { error: err.message });
+        actionLog.addError(logEntry, `Step "${step.name}" threw`, err.message);
         break;
       }
     }
 
     const allSuccess = results.every(r => r.success);
     this.onActionComplete(actionId, allSuccess, results);
+
+    await actionLog.finalize(logEntry, allSuccess ? 'success' : 'failed');
+    _currentLogEntry = null;
 
     return {
       actionId,
@@ -1650,6 +2363,7 @@ function buildParamEditorHTML(actionId, currentParams) {
 export {
   ACTION_REGISTRY,
   ActionEngine,
+  actionLog,
   buildConfirmationHTML,
   buildProgressHTML,
   buildResultHTML,
