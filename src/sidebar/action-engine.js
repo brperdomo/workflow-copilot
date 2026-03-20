@@ -307,6 +307,312 @@ function normalizeBody(input, _logEntry) {
   return empty;
 }
 
+// ── Grid Column Definition Builder ──
+// Takes a simplified column spec from the LLM and produces a complete columnDef object.
+// The LLM provides: { name, displayName, type, width } + type-specific props.
+// The engine fills in all platform-required properties.
+const GRID_DATE_CELL_TEMPLATE = `<span>
+              <span ng-if="row.entity[col.field]">
+                <span ng-switch="grid.appScope.$parent.$ctrl.valueType(row.entity[col.field])">
+                  <span ng-switch-when="string">
+                    {{row.entity[col.field] | intDate:({dateOnly: true})}}
+                  </span>
+                  <span ng-switch-when="object">
+                    {{row.entity[col.field].toISOString() | intDate:({dateOnly: true})}}
+                  </span>
+                </span>
+              <span>
+            </span>`;
+
+function buildGridColumnDef(col, _logEntry) {
+  const id = 'gridcol-' + Date.now() + Math.random().toString(36).slice(2, 5);
+  const type = col.type || 'string';
+
+  // Base properties shared by all column types
+  const def = {
+    name: col.name,
+    displayName: col.displayName || col.name,
+    width: col.width || '*',
+    type: type,
+    enableCellEdit: col.enableCellEdit !== undefined ? col.enableCellEdit : true,
+    id: col.id || id,
+    cellClass: col.cellClass || null,
+    headerCellClass: col.headerCellClass || null,
+    footerCellClass: col.footerCellClass || null,
+    selectedCurrencyFilter: null,
+    footerCellFilter: col.footerCellFilter || null,
+    validators: col.validators || { required: false },
+    regex: col.regex || null,
+    allowCellFocus: true,
+    enableCellEditOnFocus: true,
+    enableSorting: col.enableSorting !== undefined ? col.enableSorting : true,
+    delete: false,
+    aggregationColumns: null,
+    rowAggregationType: null,
+    editableCellTemplate: 'ui-grid/cellEditor',
+    hidden: col.hidden || false,
+    cellEditableCondition: col.cellEditableCondition !== undefined ? col.cellEditableCondition : true,
+    enableHiding: false
+  };
+
+  // ── Type-specific enrichment ──
+  if (type === 'string') {
+    def.cellTooltip = true;
+  }
+
+  if (type === 'number') {
+    def.cellClass = col.cellClass || 'rightAligned';
+    if (col.footerCellFilter) def.footerCellFilter = col.footerCellFilter;
+  }
+
+  if (type === 'currency') {
+    def.cellClass = col.cellClass || 'rightAligned';
+    def.selectedCurrencyFilter = col.selectedCurrencyFilter || 'en-us';
+    const cf = def.selectedCurrencyFilter;
+    def.cellTemplate = `<span> {{grid.getCellValue(row, col) | intCurrency:"${cf}"}}</span>`;
+    def.footerCellFilter = col.footerCellFilter || `intCurrency:"${cf}"`;
+    def.aggregationType = col.aggregationType !== undefined ? col.aggregationType : 2;
+    def.aggregationLabel = ' ';
+  }
+
+  if (type === 'MultiChoiceSelectList') {
+    def.cellTemplate = '<int-question question="row.entity[col.field]"></int-question>';
+    def.editableCellTemplate = '<int-question question="row.entity[col.field]"></int-question>';
+    def.allowCellFocus = false;
+    def.enableCellEditOnFocus = false;
+    // Build the embedded question object
+    def.question = {
+      QuestionType: 'MultiChoiceSelectList',
+      Label: col.displayName || col.name,
+      Choices: (col.choices || []).map(c =>
+        typeof c === 'string' ? { Label: c, Value: c } : { Label: c.Label || c.label, Value: c.Value || c.value || c.Label || c.label }
+      ),
+      multiple: col.multiple || false,
+      flex: 100,
+      ClientID: '',
+      class: 'gridSelectList',
+      show: true,
+      dbSettings: { useDB: false },
+      Answer: null,
+      SelectedValue: null,
+      disabled: false
+    };
+  }
+
+  if (type === 'boolean') {
+    // Default checkbox — no special template needed
+  }
+
+  if (type === 'StaticText') {
+    def.hidden = true;
+    def.enableSorting = false;
+    def.visible = false;
+    def.enableColumnMenu = false;
+    def.cellTooltip = true;
+  }
+
+  if (type === 'date') {
+    def.cellTemplate = GRID_DATE_CELL_TEMPLATE;
+  }
+
+  if (type === 'FileAttachment') {
+    def.cellTemplate = '<int-question-file-attachment question="row.entity[col.field]" grid-ui="true"></int-question-file-attachment>';
+    def.editableCellTemplate = '<int-question-file-attachment question="row.entity[col.field]" grid-ui="true"></int-question-file-attachment>';
+    def.allowCellFocus = false;
+    def.enableCellEditOnFocus = false;
+    def.question = {
+      QuestionType: 'FileAttachment',
+      Label: 'File Attachment: ',
+      flex: 100,
+      ClientID: '',
+      class: 'gridFileAttachment',
+      show: true,
+      Answer: [],
+      events: { onChange: null }
+    };
+  }
+
+  if (type === 'RowAggregation') {
+    def.enableCellEdit = false;
+    def.allowCellFocus = false;
+    def.enableCellEditOnFocus = false;
+    def.cellTemplate = "<div class='row-agg-total ui-grid-cell-contents'>{{grid.appScope.$ctrl.aggregateRow(row, col)}}</div>";
+    def.editableCellTemplate = "<div class='row-agg-total ui-grid-cell-contents'>{{grid.appScope.$ctrl.aggregateRow(row, col)}}</div>";
+    def.aggregationType = col.aggregationType !== undefined ? col.aggregationType : 2;
+    def.aggregationLabel = ' ';
+    def.rowAggregationType = col.rowAggregationType || 'multiply';
+    // aggregationColumns will be resolved after all columns are built
+    def._aggregationColumnNames = col.aggregationColumnNames || (col.aggregationColumns || []).map(c => c.name || c);
+    if (col.footerCellFilter) def.footerCellFilter = col.footerCellFilter;
+    if (col.selectedCurrencyFilter) {
+      def.selectedCurrencyFilter = col.selectedCurrencyFilter;
+      def.footerCellFilter = def.footerCellFilter || `intCurrency:"${col.selectedCurrencyFilter}"`;
+    }
+  }
+
+  if (_logEntry && type !== 'string') {
+    actionLog.addNormalization(_logEntry, `gridColumn:${col.name}`, `type "${type}"`, `built full columnDef with ${Object.keys(def).length} properties`);
+  }
+
+  return def;
+}
+
+// Resolves RowAggregation column references after all columnDefs are built.
+// RowAggregation columns reference other columns by ID — this links them.
+function resolveGridAggregationColumns(columnDefs) {
+  for (const def of columnDefs) {
+    if (def.type === 'RowAggregation' && def._aggregationColumnNames) {
+      def.aggregationColumns = def._aggregationColumnNames.map(name => {
+        const ref = columnDefs.find(c => c.name === name);
+        if (!ref) return null;
+        // Build the reference object matching the platform format
+        return {
+          id: ref.id,
+          name: ref.name,
+          displayName: ref.displayName,
+          type: ref.type,
+          visible: !ref.hidden,
+          width: ref.width,
+          cellClass: ref.cellClass,
+          headerCellClass: ref.headerCellClass,
+          footerCellClass: ref.footerCellClass,
+          enableSorting: ref.enableSorting,
+          enableCellEdit: ref.enableCellEdit,
+          validators: ref.validators,
+          regex: ref.regex,
+          enableCellEditOnFocus: ref.enableCellEditOnFocus,
+          allowCellFocus: ref.allowCellFocus,
+          enableHiding: ref.enableHiding,
+          ...(ref.selectedCurrencyFilter ? {
+            selectedCurrencyFilter: ref.selectedCurrencyFilter,
+            cellTemplate: ref.cellTemplate,
+            aggregationType: ref.aggregationType,
+            aggregationLabel: ref.aggregationLabel
+          } : {}),
+          ...(ref.footerCellFilter ? { footerCellFilter: ref.footerCellFilter } : {}),
+          cellEditableCondition: ref.cellEditableCondition,
+          editableCellTemplate: ref.editableCellTemplate
+        };
+      }).filter(Boolean);
+      delete def._aggregationColumnNames;
+    }
+  }
+}
+
+// ── Grid Row Data Builder ──
+// Given finalized columnDefs and a row count, produces row objects
+// with correct default values per column type. Complex types (SelectList, FileAttachment)
+// get deep-cloned embedded question objects with unique ClientIDs.
+function buildGridRowData(columnDefs, rowCount) {
+  const rows = [];
+  for (let r = 0; r < rowCount; r++) {
+    const row = {};
+    for (const col of columnDefs) {
+      if (col.type === 'MultiChoiceSelectList' && col.question) {
+        // Deep clone with unique ClientID per row
+        const q = JSON.parse(JSON.stringify(col.question));
+        q.ClientID = Date.now() + r;
+        q.events = { onChange: null, onBlur: null, onFocus: null, onResponse: null };
+        q.formSid = '';
+        q.builderMode = false;
+        q.loaded = true;
+        q.isdirty = false;
+        q.originalAnswer = null;
+        q.id = q.ClientID;
+        q.islive = false;
+        q.selectedValue = null;
+        q.validation = {};
+        row[col.name] = q;
+      } else if (col.type === 'FileAttachment' && col.question) {
+        const q = JSON.parse(JSON.stringify(col.question));
+        q.uploadParentFolder = 'temp';
+        q.uploadPath = '/';
+        q.validation = {};
+        row[col.name] = q;
+      } else if (col.type === 'StaticText') {
+        row[col.name] = '';
+      } else {
+        // string, number, currency, boolean, date, RowAggregation → null
+        row[col.name] = null;
+      }
+    }
+    rows.push(row);
+  }
+  return rows;
+}
+
+// Default gridOptions properties (ui-grid boilerplate the platform expects)
+const GRID_OPTIONS_DEFAULTS = {
+  enableRowHashing: true,
+  flatEntityAccess: false,
+  showHeader: true,
+  headerRowHeight: 30,
+  rowHeight: 30,
+  showGridFooter: false,
+  columnFooterHeight: 30,
+  gridFooterHeight: 30,
+  columnWidth: 50,
+  maxVisibleColumnCount: 200,
+  virtualizationThreshold: 20,
+  columnVirtualizationThreshold: 10,
+  excessRows: 4,
+  scrollThreshold: 4,
+  excessColumns: 4,
+  aggregationCalcThrottle: 500,
+  wheelScrollThrottle: 70,
+  scrollDebounce: 300,
+  enableHiding: true,
+  suppressMultiSort: false,
+  filterContainer: 'headerCell',
+  enableColumnMenus: true,
+  enableVerticalScrollbar: 1,
+  enableHorizontalScrollbar: 1,
+  enableMinHeightCheck: true,
+  minimumColumnSize: 30,
+  headerTemplate: null,
+  footerTemplate: 'ui-grid/ui-grid-footer',
+  gridFooterTemplate: 'ui-grid/ui-grid-grid-footer',
+  rowTemplate: 'ui-grid/ui-grid-row',
+  gridMenuTemplate: 'ui-grid/uiGridMenu',
+  disableGridMenuHideOnScroll: false,
+  menuButtonTemplate: 'ui-grid/ui-grid-menu-button',
+  menuItemTemplate: 'ui-grid/uiGridMenuItem',
+  appScopeProvider: null,
+  cellEditableCondition: true,
+  modifierKeysToMultiSelectCells: false,
+  keyDownOverrides: [],
+  importerShowMenu: true,
+  exporterSuppressMenu: false,
+  exporterMenuLabel: 'Export',
+  exporterSuppressColumns: [],
+  exporterCsvColumnSeparator: ',',
+  exporterCsvFilename: 'download.csv',
+  exporterPdfFilename: 'download.pdf',
+  exporterExcelFilename: 'download.xlsx',
+  exporterExcelSheetName: 'Sheet1',
+  exporterOlderExcelCompatibility: false,
+  exporterIsExcelCompatible: false,
+  exporterMenuItemOrder: 200,
+  exporterPdfDefaultStyle: { fontSize: 11 },
+  exporterPdfTableStyle: { margin: [0, 5, 0, 15] },
+  exporterPdfTableHeaderStyle: { bold: true, fontSize: 12, color: 'black' },
+  exporterPdfHeader: null,
+  exporterPdfFooter: null,
+  exporterPdfOrientation: 'landscape',
+  exporterPdfPageSize: 'A4',
+  exporterPdfMaxGridWidth: 720,
+  exporterMenuAllData: true,
+  exporterMenuVisibleData: true,
+  exporterMenuSelectedData: true,
+  exporterMenuCsv: true,
+  exporterMenuPdf: true,
+  exporterMenuExcel: true,
+  exporterHeaderFilterUseName: false,
+  exporterColumnScaleFactor: 3.5,
+  exporterFieldApplyFilters: false,
+  exporterAllDataFn: null
+};
+
 // ── Field Template Builder ──
 // Ensures all question types have the correct full structure.
 // The LLM provides minimal params; the engine builds the complete object.
@@ -445,7 +751,67 @@ function buildFieldFromTemplate(field, _logEntry) {
 
   if (qt === 'Grid') {
     base.displayName = 'Grid';
-    base.gridOptions = field.gridOptions || { columns: [], rows: [] };
+
+    // Process columns through buildGridColumnDef — LLM can pass simplified columns or full columnDefs
+    const rawColumns = (field.gridOptions && field.gridOptions.columnDefs) || field.columns || [];
+    const columnDefs = rawColumns.map(col => buildGridColumnDef(col, _logEntry));
+
+    // Resolve RowAggregation column references now that all columns are built
+    resolveGridAggregationColumns(columnDefs);
+
+    // Determine row count
+    const rowCount = (field.gridOptions && field.gridOptions.rowsSpecified) || field.rowCount || 3;
+
+    // Build row data from column definitions (all three arrays must be independent deep copies)
+    const rowData = buildGridRowData(columnDefs, rowCount);
+
+    // Build complete gridOptions
+    base.gridOptions = Object.assign({}, GRID_OPTIONS_DEFAULTS, {
+      enableCellEdit: true,
+      enableCellEditOnFocus: false,
+      enableFiltering: (field.gridOptions && field.gridOptions.enableFiltering) || false,
+      enableSorting: true,
+      minRowsToShow: String(Math.max(rowCount + 3, 6)),
+      rowsSpecified: rowCount,
+      maxHeight: (field.gridOptions && field.gridOptions.maxHeight) || 350,
+      columnDefs: columnDefs,
+      data: rowData,
+      showAddRowButton: !(field.gridOptions && field.gridOptions.showAddRowButton === false),
+      showColumnFooter: !(field.gridOptions && field.gridOptions.showColumnFooter === false),
+      enableGridMenu: false,
+      enableImporter: false,
+      gridMenuCustomItems: [],
+      allowUsersToDeleteRows: !(field.gridOptions && field.gridOptions.allowUsersToDeleteRows === false),
+      excludeProperties: ['$$hashKey']
+    });
+
+    // Sync Answer, prefillValues, and originalAnswer with gridOptions.data
+    base.Answer = JSON.parse(JSON.stringify(rowData));
+    base.prefillValues = JSON.parse(JSON.stringify(rowData));
+    base.originalAnswer = JSON.parse(JSON.stringify(rowData));
+
+    // Build cellTemplates
+    base.cellTemplates = {};
+    if (columnDefs.some(c => c.type === 'date')) {
+      base.cellTemplates.date = GRID_DATE_CELL_TEMPLATE;
+    }
+
+    // Grid-specific properties
+    base.dontSaveDeleteColumn = true;
+    base.enableImportExport = field.enableImportExport || false;
+    base.buttons = field.buttons || {
+      show: true,
+      delete: { show: true, disabled: true },
+      add: { show: true, disabled: false }
+    };
+    base.stopBlurSave = false;
+    base.showLabel = field.showLabel !== false;
+    base.Help = field.Help || '';
+    base.showEditPanel = false;
+    base.new = false;
+    base.events = { onChange: null, onBlur: null, onFocus: null, onResponse: null };
+    base.labelForDropDown = `${base.ClientID} / ${base.Label}`;
+    base.labelForRuleString = base.Label;
   }
 
   if (qt === 'AIBox') {
@@ -1791,6 +2157,314 @@ const ACTION_REGISTRY = {
           }
 
           // The PUT expects the full form array wrapped in { node: ... }
+          return { node: formData };
+        }
+      }
+    ]
+  },
+
+  // ═══════════════════════════════════════
+  // Grid CRUD Actions
+  // ═══════════════════════════════════════
+
+  'add-grid-column': {
+    id: 'add-grid-column',
+    label: 'Add Grid Column',
+    category: 'forms',
+    level: 2,
+    description: 'Add a new column to an existing Grid field. The column is built from a simplified spec (name, type, displayName, width, etc.).',
+    requiredParams: ['formId', 'fieldIdentifier', 'column'],
+    optionalParams: ['afterColumnName'],
+    steps: [
+      {
+        name: 'Fetch current form',
+        method: 'GET',
+        path: (params) => `/workflow/napi/tasktypes/power-form/${params.formId}/builder`,
+        buildBody: () => null,
+        extractResult: { formData: '' }
+      },
+      {
+        name: 'Add column and save',
+        method: 'PUT',
+        path: (params) => `/workflow/napi/tasktypes/power-form/${params.formId}/builder`,
+        buildBody: (params, prevResults) => {
+          const formData = prevResults._rawResponse_0 || prevResults.formData;
+          if (!formData) throw new Error('Could not retrieve form data');
+          const layout = formData.layout;
+          if (!layout) throw new Error('Form layout is missing');
+
+          // Find the Grid field
+          let gridField = null;
+          for (const section of layout) {
+            for (const container of (section.contents || [])) {
+              for (const column of (container.columns || [])) {
+                for (const item of (column.items || [])) {
+                  if (item.QuestionType === 'Grid' && fieldMatches(item, params.fieldIdentifier)) {
+                    gridField = item;
+                  }
+                }
+              }
+            }
+          }
+          if (!gridField) throw new Error(`Grid field "${params.fieldIdentifier}" not found`);
+
+          const go = gridField.gridOptions;
+          if (!go || !go.columnDefs) throw new Error('Grid has no gridOptions.columnDefs');
+
+          // Build the new column
+          const newCol = buildGridColumnDef(params.column, _currentLogEntry);
+
+          // Resolve aggregation references if it's a RowAggregation column
+          if (newCol.type === 'RowAggregation' && newCol._aggregationColumnNames) {
+            const allDefs = [...go.columnDefs, newCol];
+            resolveGridAggregationColumns(allDefs);
+          }
+
+          // Insert at the right position
+          if (params.afterColumnName) {
+            const idx = go.columnDefs.findIndex(c => c.name === params.afterColumnName);
+            if (idx !== -1) {
+              go.columnDefs.splice(idx + 1, 0, newCol);
+            } else {
+              go.columnDefs.push(newCol);
+            }
+          } else {
+            go.columnDefs.push(newCol);
+          }
+
+          // Add default value for this column to every row in all three arrays
+          const defaultVal = buildGridRowData([newCol], 1)[0][newCol.name];
+          for (const arr of [go.data, gridField.Answer, gridField.prefillValues]) {
+            if (Array.isArray(arr)) {
+              for (const row of arr) {
+                row[newCol.name] = JSON.parse(JSON.stringify(defaultVal));
+              }
+            }
+          }
+
+          return { node: formData };
+        }
+      }
+    ]
+  },
+
+  'remove-grid-column': {
+    id: 'remove-grid-column',
+    label: 'Remove Grid Column',
+    category: 'forms',
+    level: 2,
+    description: 'Remove a column from an existing Grid field by column name.',
+    requiredParams: ['formId', 'fieldIdentifier', 'columnName'],
+    steps: [
+      {
+        name: 'Fetch current form',
+        method: 'GET',
+        path: (params) => `/workflow/napi/tasktypes/power-form/${params.formId}/builder`,
+        buildBody: () => null,
+        extractResult: { formData: '' }
+      },
+      {
+        name: 'Remove column and save',
+        method: 'PUT',
+        path: (params) => `/workflow/napi/tasktypes/power-form/${params.formId}/builder`,
+        buildBody: (params, prevResults) => {
+          const formData = prevResults._rawResponse_0 || prevResults.formData;
+          if (!formData) throw new Error('Could not retrieve form data');
+          const layout = formData.layout;
+          if (!layout) throw new Error('Form layout is missing');
+
+          let gridField = null;
+          for (const section of layout) {
+            for (const container of (section.contents || [])) {
+              for (const column of (container.columns || [])) {
+                for (const item of (column.items || [])) {
+                  if (item.QuestionType === 'Grid' && fieldMatches(item, params.fieldIdentifier)) {
+                    gridField = item;
+                  }
+                }
+              }
+            }
+          }
+          if (!gridField) throw new Error(`Grid field "${params.fieldIdentifier}" not found`);
+
+          const go = gridField.gridOptions;
+          const colIdx = go.columnDefs.findIndex(c => c.name === params.columnName);
+          if (colIdx === -1) throw new Error(`Column "${params.columnName}" not found in grid. Available: ${go.columnDefs.map(c => c.name).join(', ')}`);
+
+          // Check if any RowAggregation columns reference this column
+          const removedId = go.columnDefs[colIdx].id;
+          for (const def of go.columnDefs) {
+            if (def.type === 'RowAggregation' && def.aggregationColumns) {
+              const refs = def.aggregationColumns.filter(ac => ac.id === removedId || ac.name === params.columnName);
+              if (refs.length > 0) {
+                if (_currentLogEntry) actionLog.addWarning(_currentLogEntry, 'RowAggregation reference broken',
+                  `Column "${def.name}" references "${params.columnName}" in its aggregation formula`);
+              }
+            }
+          }
+
+          // Remove the columnDef
+          go.columnDefs.splice(colIdx, 1);
+
+          // Remove the column data from every row
+          for (const arr of [go.data, gridField.Answer, gridField.prefillValues]) {
+            if (Array.isArray(arr)) {
+              for (const row of arr) {
+                delete row[params.columnName];
+              }
+            }
+          }
+
+          return { node: formData };
+        }
+      }
+    ]
+  },
+
+  'update-grid-column': {
+    id: 'update-grid-column',
+    label: 'Update Grid Column',
+    category: 'forms',
+    level: 2,
+    description: 'Update properties of an existing Grid column (displayName, width, validators, type, choices, etc.). Deep merges the updates.',
+    requiredParams: ['formId', 'fieldIdentifier', 'columnName', 'updates'],
+    steps: [
+      {
+        name: 'Fetch current form',
+        method: 'GET',
+        path: (params) => `/workflow/napi/tasktypes/power-form/${params.formId}/builder`,
+        buildBody: () => null,
+        extractResult: { formData: '' }
+      },
+      {
+        name: 'Update column and save',
+        method: 'PUT',
+        path: (params) => `/workflow/napi/tasktypes/power-form/${params.formId}/builder`,
+        buildBody: (params, prevResults) => {
+          const formData = prevResults._rawResponse_0 || prevResults.formData;
+          if (!formData) throw new Error('Could not retrieve form data');
+          const layout = formData.layout;
+          if (!layout) throw new Error('Form layout is missing');
+
+          let gridField = null;
+          for (const section of layout) {
+            for (const container of (section.contents || [])) {
+              for (const column of (container.columns || [])) {
+                for (const item of (column.items || [])) {
+                  if (item.QuestionType === 'Grid' && fieldMatches(item, params.fieldIdentifier)) {
+                    gridField = item;
+                  }
+                }
+              }
+            }
+          }
+          if (!gridField) throw new Error(`Grid field "${params.fieldIdentifier}" not found`);
+
+          const go = gridField.gridOptions;
+          const colDef = go.columnDefs.find(c => c.name === params.columnName);
+          if (!colDef) throw new Error(`Column "${params.columnName}" not found in grid. Available: ${go.columnDefs.map(c => c.name).join(', ')}`);
+
+          // Deep merge updates into the column definition
+          function deepMerge(target, source) {
+            for (const key of Object.keys(source)) {
+              if (source[key] && typeof source[key] === 'object' && !Array.isArray(source[key])
+                  && target[key] && typeof target[key] === 'object' && !Array.isArray(target[key])) {
+                deepMerge(target[key], source[key]);
+              } else {
+                target[key] = source[key];
+              }
+            }
+          }
+          deepMerge(colDef, params.updates);
+
+          // If choices were updated for a MultiChoiceSelectList, sync row data
+          if (colDef.type === 'MultiChoiceSelectList' && params.updates.choices) {
+            const newChoices = params.updates.choices.map(c =>
+              typeof c === 'string' ? { Label: c, Value: c } : { Label: c.Label || c.label, Value: c.Value || c.value || c.Label || c.label }
+            );
+            if (colDef.question) colDef.question.Choices = newChoices;
+            for (const arr of [go.data, gridField.Answer, gridField.prefillValues]) {
+              if (Array.isArray(arr)) {
+                for (const row of arr) {
+                  if (row[params.columnName] && row[params.columnName].Choices) {
+                    row[params.columnName].Choices = JSON.parse(JSON.stringify(newChoices));
+                  }
+                }
+              }
+            }
+          }
+
+          return { node: formData };
+        }
+      }
+    ]
+  },
+
+  'add-grid-row': {
+    id: 'add-grid-row',
+    label: 'Add Grid Rows',
+    category: 'forms',
+    level: 2,
+    description: 'Add one or more rows to an existing Grid field.',
+    requiredParams: ['formId', 'fieldIdentifier'],
+    optionalParams: ['rowCount', 'rowData'],
+    steps: [
+      {
+        name: 'Fetch current form',
+        method: 'GET',
+        path: (params) => `/workflow/napi/tasktypes/power-form/${params.formId}/builder`,
+        buildBody: () => null,
+        extractResult: { formData: '' }
+      },
+      {
+        name: 'Add rows and save',
+        method: 'PUT',
+        path: (params) => `/workflow/napi/tasktypes/power-form/${params.formId}/builder`,
+        buildBody: (params, prevResults) => {
+          const formData = prevResults._rawResponse_0 || prevResults.formData;
+          if (!formData) throw new Error('Could not retrieve form data');
+          const layout = formData.layout;
+          if (!layout) throw new Error('Form layout is missing');
+
+          let gridField = null;
+          for (const section of layout) {
+            for (const container of (section.contents || [])) {
+              for (const column of (container.columns || [])) {
+                for (const item of (column.items || [])) {
+                  if (item.QuestionType === 'Grid' && fieldMatches(item, params.fieldIdentifier)) {
+                    gridField = item;
+                  }
+                }
+              }
+            }
+          }
+          if (!gridField) throw new Error(`Grid field "${params.fieldIdentifier}" not found`);
+
+          const go = gridField.gridOptions;
+          const count = params.rowCount || 1;
+          const newRows = buildGridRowData(go.columnDefs, count);
+
+          // Merge any provided rowData into the new rows
+          if (params.rowData && typeof params.rowData === 'object') {
+            for (const row of newRows) {
+              for (const [key, val] of Object.entries(params.rowData)) {
+                if (row.hasOwnProperty(key) && val !== undefined) {
+                  row[key] = val;
+                }
+              }
+            }
+          }
+
+          // Push to all three arrays
+          for (const arr of [go.data, gridField.Answer, gridField.prefillValues]) {
+            if (Array.isArray(arr)) {
+              arr.push(...JSON.parse(JSON.stringify(newRows)));
+            }
+          }
+
+          go.rowsSpecified = (go.rowsSpecified || 0) + count;
+          go.minRowsToShow = String(Math.max(go.rowsSpecified + 3, 6));
+
           return { node: formData };
         }
       }

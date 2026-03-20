@@ -1489,6 +1489,7 @@ Inside layout: sections[] → .contents[] (containers) → .columns[] → .items
 - Radio: radFieldName
 - Email: emlFieldName
 - Number: numFieldName
+- Grid: grdFieldName (e.g., grdLineItems, grdInventory)
 When the user says "under First Name", use afterClientId: "txtFirstName". You can infer ClientIDs from field labels using these conventions.
 
 **Field object templates by QuestionType (use these EXACT structures):**
@@ -1521,6 +1522,27 @@ Number: QuestionType:"Number", displayName:"Number", prefix num_
 File Attachment: QuestionType:"FileAttachment", displayName:"File Attachment", prefix fa_
 Signature: QuestionType:"Signature", displayName:"Signature", prefix sig_
 
+Grid: QuestionType:"Grid", displayName:"Grid", prefix grd_
+The engine builds the FULL Grid structure from a simplified spec. You provide:
+- QuestionType: "Grid", Label, ClientID (prefix grd)
+- columns: array of column specs — each needs at minimum: { name, displayName, type, width }
+- Supported column types: "string", "number", "currency", "boolean", "date", "StaticText", "MultiChoiceSelectList", "FileAttachment", "RowAggregation"
+- For MultiChoiceSelectList columns: include choices: [{Label, Value}] or ["High","Medium","Low"]
+- For RowAggregation (computed columns): include aggregationColumnNames: ["QTY","Cost"], rowAggregationType: "multiply"|"sum"
+- For currency: optionally include selectedCurrencyFilter: "en-us"
+- Optional: rowCount (default 3), gridOptions: { enableFiltering, showAddRowButton, maxHeight }
+- The engine auto-generates: columnDefs with full properties, row data (Answer + gridOptions.data + prefillValues in sync), cellTemplates, buttons, all ui-grid boilerplate.
+Example:
+\`\`\`json
+{"QuestionType":"Grid","Label":"Line Items","ClientID":"grdLineItems","columns":[{"name":"Description","displayName":"Description","type":"string","width":"200","validators":{"required":true}},{"name":"QTY","displayName":"QTY","type":"number","width":"75"},{"name":"Price","displayName":"Price","type":"currency","width":"100"},{"name":"Priority","displayName":"Priority","type":"MultiChoiceSelectList","width":"120","choices":["High","Medium","Low"]},{"name":"Total","displayName":"Total","type":"RowAggregation","width":"125","aggregationColumnNames":["QTY","Price"],"rowAggregationType":"multiply"}],"rowCount":3}
+\`\`\`
+
+**Grid-specific actions** (for modifying existing Grids):
+- \`add-grid-column\` — Add a column to a Grid. Params: formId, fieldIdentifier (Grid's ClientID/Label), column ({name, displayName, type, width, ...}), [afterColumnName].
+- \`remove-grid-column\` — Remove a column. Params: formId, fieldIdentifier, columnName.
+- \`update-grid-column\` — Update column properties (displayName, width, validators, choices, etc.). Params: formId, fieldIdentifier, columnName, updates.
+- \`add-grid-row\` — Add row(s). Params: formId, fieldIdentifier, [rowCount] (default 1), [rowData] (partial data to pre-fill).
+
 **CRITICAL QuestionType values** (use these EXACTLY — the display name differs from the internal type):
 - Radio Buttons → QuestionType: "DbRadioButton" (NOT "RadioButtons")
 - Checkboxes → QuestionType: "DbCheckbox" (NOT "Checkbox" or "Checkboxes")
@@ -1531,6 +1553,7 @@ Signature: QuestionType:"Signature", displayName:"Signature", prefix sig_
 - Calendar → QuestionType: "Calendar"
 - Number → QuestionType: "Number"
 - RESTful Element → QuestionType: "RESTfulElement" (NOT "RestfulElement" or "RESTful")
+- Grid → QuestionType: "Grid"
 
 **Field Templates — the engine auto-builds full structures.** You only need to provide:
 - QuestionType, Label, ClientID (with correct prefix), and any type-specific config (Choices for radio/checkbox/select, validation, restRequest for RESTfulElement).
