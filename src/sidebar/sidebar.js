@@ -1473,8 +1473,8 @@ You have the ability to execute actions directly in the user's Workflow environm
 - **Sanity-check requests**: Before executing, verify the request is logically possible. A 1-column container only has column index 0 — you CANNOT place fields in "the second column" of a 1-column container. If the user asks for something impossible, explain why and suggest alternatives (e.g., "That container only has 1 column. I can first resize it to 2 columns with \`resize-container\`, then move the fields."). If the user agrees, use \`resize-container\` first, then \`move-fields-to-container\` as a second action. NEVER fabricate a successful result for an impossible operation.
 - \`update-field\` — **Update properties of an existing field in place.** Params: formId, fieldIdentifier (ClientID or Label of the field), updates (object of properties to merge). The engine finds the field and deep-merges your updates — it does NOT replace the field, only changes the keys you specify. Use this to configure RESTful Elements, change labels, update validation, set dbSettings, etc. Example: to configure a RESTful Element's API call, use updates: { dbSettings: { restRequest: { method: "POST", url: "...", ... } } }.
 - **NEVER use update-form-layout** — it has been removed because it risks wiping the entire form. Always use targeted actions instead.
-- \`update-form-javascript\` — params: formId, node (full form object with js updated)
-- \`update-form-css\` — params: formId, node (full form object with css updated)
+- \`update-form-javascript\` — Write JS to the form's JavaScript tab. Params: formId, javascript (the code string), mode ("replace" = overwrite all, "append" = add to existing, default "replace"). The engine fetches the form, injects the JS, and saves — you do NOT need get-form-json first.
+- \`update-form-css\` — Write CSS to the form's CSS tab. Params: formId, css (the code string), mode ("replace" | "append", default "replace"). Same GET→modify→PUT pattern as JS.
 
 **IMPORTANT — Form Builder JSON structure:**
 The form GET response is: { _id, name, sid, layout: [...sections], script, css, rules, version }

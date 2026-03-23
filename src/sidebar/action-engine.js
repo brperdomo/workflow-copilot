@@ -1462,16 +1462,32 @@ const ACTION_REGISTRY = {
     label: 'Update Form JavaScript',
     category: 'forms',
     level: 2,
-    description: 'Add or update JavaScript on a form. Sends the full form object with updated JS.',
-    requiredParams: ['formId', 'node'],
+    description: 'Fetch the form, update its JavaScript, and save. Supports "replace" (full replacement) or "append" (add to existing). The LLM only needs to provide the JS code, not the full form object.',
+    requiredParams: ['formId', 'javascript'],
+    optionalParams: ['mode'],
     steps: [
       {
-        name: 'Save form with JavaScript',
+        name: 'Fetch current form',
+        method: 'GET',
+        path: (params) => `/workflow/napi/tasktypes/power-form/${params.formId}/builder`,
+        buildBody: () => null,
+        extractResult: { formData: '' }
+      },
+      {
+        name: 'Update JavaScript and save',
         method: 'PUT',
         path: (params) => `/workflow/napi/tasktypes/power-form/${params.formId}/builder`,
-        buildBody: (params) => ({
-          node: params.node
-        })
+        buildBody: (params, prevResults) => {
+          const formData = prevResults[0].formData;
+          const mode = params.mode || 'replace';
+          if (mode === 'append') {
+            const existing = formData.js || '';
+            formData.js = existing + (existing ? '\n\n' : '') + params.javascript;
+          } else {
+            formData.js = params.javascript;
+          }
+          return { node: formData };
+        }
       }
     ]
   },
@@ -1481,16 +1497,32 @@ const ACTION_REGISTRY = {
     label: 'Update Form CSS',
     category: 'forms',
     level: 2,
-    description: 'Add or update CSS styles on a form. Sends the full form object with updated CSS.',
-    requiredParams: ['formId', 'node'],
+    description: 'Fetch the form, update its CSS, and save. Supports "replace" (full replacement) or "append" (add to existing). The LLM only needs to provide the CSS code, not the full form object.',
+    requiredParams: ['formId', 'css'],
+    optionalParams: ['mode'],
     steps: [
       {
-        name: 'Save form with CSS',
+        name: 'Fetch current form',
+        method: 'GET',
+        path: (params) => `/workflow/napi/tasktypes/power-form/${params.formId}/builder`,
+        buildBody: () => null,
+        extractResult: { formData: '' }
+      },
+      {
+        name: 'Update CSS and save',
         method: 'PUT',
         path: (params) => `/workflow/napi/tasktypes/power-form/${params.formId}/builder`,
-        buildBody: (params) => ({
-          node: params.node
-        })
+        buildBody: (params, prevResults) => {
+          const formData = prevResults[0].formData;
+          const mode = params.mode || 'replace';
+          if (mode === 'append') {
+            const existing = formData.css || '';
+            formData.css = existing + (existing ? '\n\n' : '') + params.css;
+          } else {
+            formData.css = params.css;
+          }
+          return { node: formData };
+        }
       }
     ]
   },
