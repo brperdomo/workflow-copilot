@@ -1462,33 +1462,32 @@ const ACTION_REGISTRY = {
     label: 'Update Form JavaScript',
     category: 'forms',
     level: 2,
-    description: 'Fetch the form, update its JavaScript, and save. Supports "replace" (full replacement) or "append" (add to existing). The LLM only needs to provide the JS code, not the full form object.',
+    description: 'Update the form JavaScript. Fetches existing code first (for append mode), then saves via updateSpecificProperty endpoint. Supports "replace" (default) or "append".',
     requiredParams: ['formId', 'javascript'],
     optionalParams: ['mode'],
     steps: [
       {
-        name: 'Fetch current form',
+        name: 'Fetch current JavaScript',
         method: 'GET',
-        path: (params) => `/workflow/napi/tasktypes/power-form/${params.formId}/builder`,
+        path: (params) => `/workflow/napi/tasktypes/power-form/${params.formId}/code/script`,
         buildBody: () => null,
-        extractResult: { formData: '' }
+        extractResult: { existingCode: '' }
       },
       {
-        name: 'Update JavaScript and save',
+        name: 'Save JavaScript',
         method: 'PUT',
-        path: (params) => `/workflow/napi/tasktypes/power-form/${params.formId}/builder`,
+        path: (params) => `/workflow/napi/tasktypes/power-form/${params.formId}/updateSpecificProperty`,
         buildBody: (params, prevResults) => {
-          const formData = prevResults._rawResponse_0 || prevResults.formData;
-          if (!formData) throw new Error('Could not retrieve form data');
           const mode = params.mode || 'replace';
-          // Form Builder uses "script" property for JS (NOT "js")
+          let newScript = params.javascript;
           if (mode === 'append') {
-            const existing = formData.script || '';
-            formData.script = existing + (existing ? '\n\n' : '') + params.javascript;
-          } else {
-            formData.script = params.javascript;
+            const existing = prevResults._rawResponse_0 || prevResults.existingCode || '';
+            newScript = existing + (existing ? '\n\n' : '') + params.javascript;
           }
-          return { node: formData };
+          return {
+            sid: params.formId,
+            updateThis: { script: newScript }
+          };
         }
       }
     ]
@@ -1499,32 +1498,32 @@ const ACTION_REGISTRY = {
     label: 'Update Form CSS',
     category: 'forms',
     level: 2,
-    description: 'Fetch the form, update its CSS, and save. Supports "replace" (full replacement) or "append" (add to existing). The LLM only needs to provide the CSS code, not the full form object.',
+    description: 'Update the form CSS. Fetches existing styles first (for append mode), then saves via updateSpecificProperty endpoint. Supports "replace" (default) or "append".',
     requiredParams: ['formId', 'css'],
     optionalParams: ['mode'],
     steps: [
       {
-        name: 'Fetch current form',
+        name: 'Fetch current CSS',
         method: 'GET',
-        path: (params) => `/workflow/napi/tasktypes/power-form/${params.formId}/builder`,
+        path: (params) => `/workflow/napi/tasktypes/power-form/${params.formId}/code/css`,
         buildBody: () => null,
-        extractResult: { formData: '' }
+        extractResult: { existingCode: '' }
       },
       {
-        name: 'Update CSS and save',
+        name: 'Save CSS',
         method: 'PUT',
-        path: (params) => `/workflow/napi/tasktypes/power-form/${params.formId}/builder`,
+        path: (params) => `/workflow/napi/tasktypes/power-form/${params.formId}/updateSpecificProperty`,
         buildBody: (params, prevResults) => {
-          const formData = prevResults._rawResponse_0 || prevResults.formData;
-          if (!formData) throw new Error('Could not retrieve form data');
           const mode = params.mode || 'replace';
+          let newCss = params.css;
           if (mode === 'append') {
-            const existing = formData.css || '';
-            formData.css = existing + (existing ? '\n\n' : '') + params.css;
-          } else {
-            formData.css = params.css;
+            const existing = prevResults._rawResponse_0 || prevResults.existingCode || '';
+            newCss = existing + (existing ? '\n\n' : '') + params.css;
           }
-          return { node: formData };
+          return {
+            sid: params.formId,
+            updateThis: { css: newCss }
+          };
         }
       }
     ]
