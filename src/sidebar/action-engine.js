@@ -368,9 +368,42 @@ const GRID_DATE_CELL_TEMPLATE = `<span>
               <span>
             </span>`;
 
+// ── Grid column type normalization ──
+const GRID_COLUMN_TYPE_ALIASES = {
+  'text': 'string', 'str': 'string', 'varchar': 'string',
+  'int': 'number', 'integer': 'number', 'float': 'number', 'decimal': 'number', 'numeric': 'number',
+  'money': 'currency', 'dollar': 'currency', 'price': 'currency', 'amount': 'currency',
+  'bool': 'boolean', 'checkbox': 'boolean', 'check': 'boolean', 'yesno': 'boolean', 'yes/no': 'boolean',
+  'select': 'MultiChoiceSelectList', 'dropdown': 'MultiChoiceSelectList', 'selectlist': 'MultiChoiceSelectList',
+  'multichoice': 'MultiChoiceSelectList', 'multi_choice': 'MultiChoiceSelectList',
+  'file': 'FileAttachment', 'attachment': 'FileAttachment', 'upload': 'FileAttachment',
+  'calendar': 'date', 'datetime': 'date', 'datepicker': 'date',
+  'static': 'StaticText', 'label': 'StaticText', 'readonly': 'StaticText', 'display': 'StaticText',
+  'formula': 'RowAggregation', 'computed': 'RowAggregation', 'calculated': 'RowAggregation', 'aggregate': 'RowAggregation'
+};
+const VALID_GRID_COLUMN_TYPES = ['string', 'number', 'currency', 'MultiChoiceSelectList', 'boolean', 'StaticText', 'date', 'FileAttachment', 'RowAggregation'];
+
+function normalizeGridColumnType(rawType, _logEntry, colName) {
+  if (!rawType) return 'string';
+  if (VALID_GRID_COLUMN_TYPES.includes(rawType)) return rawType;
+  const alias = GRID_COLUMN_TYPE_ALIASES[rawType.toLowerCase()];
+  if (alias) {
+    if (_logEntry) {
+      actionLog.addNormalization(_logEntry, `Grid column "${colName}" type`,
+        `"${rawType}" (LLM value)`, `"${alias}" (corrected)`);
+    }
+    return alias;
+  }
+  if (_logEntry) {
+    actionLog.addWarning(_logEntry, `Unknown grid column type "${rawType}" for "${colName}"`,
+      `Defaulting to "string".`);
+  }
+  return 'string';
+}
+
 function buildGridColumnDef(col, _logEntry) {
   const id = 'gridcol-' + Date.now() + Math.random().toString(36).slice(2, 5);
-  const type = col.type || 'string';
+  const type = normalizeGridColumnType(col.type, _logEntry, col.name || col.displayName);
 
   // Base properties shared by all column types
   const def = {
@@ -660,15 +693,127 @@ const GRID_OPTIONS_DEFAULTS = {
 // ── Field Template Builder ──
 // Ensures all question types have the correct full structure.
 // The LLM provides minimal params; the engine builds the complete object.
+// ── QuestionType normalization map ──
+// LLMs frequently use display names or wrong casing. This maps common mistakes to the correct internal type.
+const QUESTION_TYPE_ALIASES = {
+  // Radio button variants
+  'radiobuttons': 'DbRadioButton', 'radiobutton': 'DbRadioButton', 'radio': 'DbRadioButton',
+  'radio buttons': 'DbRadioButton', 'radio_buttons': 'DbRadioButton', 'radios': 'DbRadioButton',
+  // Checkbox variants
+  'checkbox': 'DbCheckbox', 'checkboxes': 'DbCheckbox', 'check': 'DbCheckbox',
+  'check_boxes': 'DbCheckbox', 'check boxes': 'DbCheckbox',
+  // Select list variants
+  'selectlist': 'DbSelectList', 'select': 'DbSelectList', 'dropdown': 'DbSelectList',
+  'select_list': 'DbSelectList', 'select list': 'DbSelectList', 'dropdownlist': 'DbSelectList',
+  // Email variants
+  'email': 'EmailAddress', 'emailfield': 'EmailAddress', 'email_address': 'EmailAddress',
+  // Text variants
+  'textarea': 'LongText', 'text_area': 'LongText', 'multiline': 'LongText',
+  'text': 'ShortText', 'textfield': 'ShortText', 'short_text': 'ShortText',
+  'shorttext': 'ShortText', 'longtext': 'LongText', 'long_text': 'LongText',
+  // RESTful variants
+  'restfulelement': 'RESTfulElement', 'restful': 'RESTfulElement', 'rest': 'RESTfulElement',
+  'restfulElement': 'RESTfulElement', 'restelement': 'RESTfulElement', 'rest_element': 'RESTfulElement',
+  // Other variants
+  'file': 'FileAttachment', 'fileupload': 'FileAttachment', 'file_attachment': 'FileAttachment',
+  'date': 'Calendar', 'datepicker': 'Calendar', 'date_picker': 'Calendar',
+  'richtext': 'RichText', 'rich_text': 'RichText', 'html': 'RichText',
+  'link': 'Hyperlink', 'url': 'Hyperlink',
+  'phone': 'ShortText', 'currency': 'Number',
+  'contactsearch': 'ContactSearch', 'contact_search': 'ContactSearch', 'contact': 'ContactSearch',
+  'searchbox': 'SearchBox', 'search_box': 'SearchBox', 'search': 'SearchBox',
+  'timezone': 'TimeZone', 'time_zone': 'TimeZone',
+  'aibox': 'AIBox', 'ai_box': 'AIBox', 'ai': 'AIBox',
+  'btn': 'Button', 'button': 'Button',
+  'sig': 'Signature', 'sign': 'Signature',
+  'pwd': 'Password', 'pass': 'Password',
+  'grid': 'Grid', 'table': 'Grid', 'datagrid': 'Grid'
+};
+
+// ── ClientID prefix conventions ──
+const CLIENTID_PREFIXES = {
+  'ShortText': 'txt', 'LongText': 'ltxt', 'Number': 'num', 'Hyperlink': 'lnk',
+  'EmailAddress': 'eml', 'Calendar': 'cal', 'DbSelectList': 'ddl', 'DbCheckbox': 'chk',
+  'DbRadioButton': 'rad', 'FileAttachment': 'fa', 'Signature': 'sig',
+  'ContactSearch': 'cs', 'SearchBox': 'srch', 'RESTfulElement': 'rest_',
+  'Grid': 'grd', 'Button': 'btn', 'AIBox': 'ai', 'RichText': 'rtxt',
+  'Password': 'pwd', 'TimeZone': 'tz'
+};
+
+// Normalizes a QuestionType string from LLM output to the correct internal value.
+function normalizeQuestionType(rawType, _logEntry) {
+  if (!rawType) return 'ShortText';
+  // Already correct — check exact match against known types
+  const VALID_TYPES = [
+    'ShortText', 'LongText', 'DbSelectList', 'DbRadioButton', 'DbCheckbox',
+    'Calendar', 'EmailAddress', 'Number', 'FileAttachment', 'RichText',
+    'Hyperlink', 'ContactSearch', 'SearchBox', 'Signature', 'Password',
+    'TimeZone', 'Grid', 'AIBox', 'RESTfulElement', 'Button'
+  ];
+  if (VALID_TYPES.includes(rawType)) return rawType;
+
+  // Try alias lookup (case-insensitive)
+  const alias = QUESTION_TYPE_ALIASES[rawType.toLowerCase()];
+  if (alias) {
+    if (_logEntry) {
+      actionLog.addNormalization(_logEntry, 'QuestionType',
+        `"${rawType}" (LLM value)`, `"${alias}" (corrected)`);
+    }
+    return alias;
+  }
+
+  // Unknown type — warn and default to ShortText
+  if (_logEntry) {
+    actionLog.addWarning(_logEntry, `Unknown QuestionType "${rawType}"`,
+      `Not in valid types or alias map. Defaulting to ShortText.`);
+  }
+  return 'ShortText';
+}
+
+// Validates and auto-corrects ClientID prefix for a given QuestionType.
+function normalizeClientID(clientId, questionType, _logEntry) {
+  if (!clientId) return clientId;
+  const expectedPrefix = CLIENTID_PREFIXES[questionType];
+  if (!expectedPrefix) return clientId; // Unknown type, can't validate
+
+  // Check if ClientID already starts with any known prefix (it's intentional)
+  const allPrefixes = Object.values(CLIENTID_PREFIXES);
+  const hasKnownPrefix = allPrefixes.some(p => clientId.startsWith(p));
+
+  if (hasKnownPrefix) {
+    // Has a prefix — check if it's the RIGHT one for this type
+    if (!clientId.startsWith(expectedPrefix)) {
+      if (_logEntry) {
+        actionLog.addWarning(_logEntry, `ClientID prefix mismatch`,
+          `"${clientId}" has wrong prefix for ${questionType}. Expected prefix: "${expectedPrefix}". Not auto-correcting — verify manually.`);
+      }
+    }
+    return clientId;
+  }
+
+  // No known prefix — auto-prepend the correct one
+  const corrected = expectedPrefix + clientId;
+  if (_logEntry) {
+    actionLog.addNormalization(_logEntry, 'ClientID',
+      `"${clientId}" (no prefix)`, `"${corrected}" (added ${expectedPrefix} for ${questionType})`);
+  }
+  return corrected;
+}
+
 function buildFieldFromTemplate(field, _logEntry) {
   const timestamp = Date.now().toString();
+
+  // ── Normalize QuestionType before anything else ──
+  const normalizedType = normalizeQuestionType(field.QuestionType, _logEntry);
+  const normalizedClientID = normalizeClientID(field.ClientID, normalizedType, _logEntry);
+
   const base = {
     id: field.id || 'new_' + timestamp,
-    ClientID: field.ClientID || '',
+    ClientID: normalizedClientID || '',
     type: 'Question_Type',
     Label: field.Label || '',
-    QuestionType: field.QuestionType || 'ShortText',
-    displayName: field.displayName || field.QuestionType || 'Short Text',
+    QuestionType: normalizedType,
+    displayName: field.displayName || normalizedType || 'Short Text',
     show: true,
     class: field.class || '',
     flex: field.flex || 100,
@@ -1456,7 +1601,49 @@ const ACTION_REGISTRY = {
             }
           }
 
-          deepMerge(targetField, params.updates);
+          // ── Normalize updates before merging ──
+          const updates = params.updates;
+
+          // Normalize QuestionType if LLM is trying to change it
+          if (updates.QuestionType) {
+            updates.QuestionType = normalizeQuestionType(updates.QuestionType, _currentLogEntry);
+          }
+
+          // Normalize restRequest sub-properties if updating a RESTful Element
+          if (updates.dbSettings && updates.dbSettings.restRequest) {
+            const rr = updates.dbSettings.restRequest;
+            if (rr.headers) {
+              rr.headers = normalizeKeyValueArray(rr.headers, _currentLogEntry, 'update restRequest.headers');
+            }
+            if (rr.queryParams) {
+              rr.queryParams = normalizeKeyValueArray(rr.queryParams, _currentLogEntry, 'update restRequest.queryParams');
+            }
+            if (rr.body) {
+              rr.body = normalizeBody(rr.body, _currentLogEntry);
+            }
+            if (rr.mappings) {
+              rr.mappings = normalizeResponseMappings(rr.mappings, _currentLogEntry);
+            }
+            if (rr.envVars) {
+              rr.envVars = normalizeEnvVars(rr.envVars, _currentLogEntry);
+            }
+          }
+
+          // Sanitize events — handlers should always be null in field JSON
+          // (actual handlers are assigned in form script)
+          if (updates.events) {
+            for (const key of Object.keys(updates.events)) {
+              if (typeof updates.events[key] === 'string' && updates.events[key].length > 0) {
+                if (_currentLogEntry) {
+                  actionLog.addWarning(_currentLogEntry, `Event handler "${key}" stripped from update`,
+                    'Event handlers must be assigned in form script (update-form-javascript), not in field JSON.');
+                }
+                updates.events[key] = null;
+              }
+            }
+          }
+
+          deepMerge(targetField, updates);
 
           return { node: formData };
         }
