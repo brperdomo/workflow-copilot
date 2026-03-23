@@ -1483,6 +1483,8 @@ You have the ability to execute actions directly in the user's Workflow environm
   - Effects: show, hide, disable, enable, readOnly, editable, required, unrequired, set_answer_with_value, set_answer_with_function. Engine accepts aliases like "visible", "hidden", "mandatory", "optional", etc.
   - Inverse rules are auto-generated with flipped operators and effects (show↔hide, required↔unrequired, equal↔notEqual, any↔all).
   - Example: name: "Show Comments", logic: "all", conditions: [{field: "Budgeted?", operator: "equals", value: "No"}], effects: [{action: "show", target: "Comments", targetType: "question"}, {action: "required", target: "Comments", targetType: "question"}]
+  - **CRITICAL ORDERING: ALL fields referenced in conditions and effects MUST already exist on the form BEFORE calling add-rule.** The engine resolves fields by label/ClientID from the live form data. If a field hasn't been added yet, the rule will fail. Always add fields FIRST, then add rules LAST.
+  - When creating fields + rules in one response, use SEPARATE action blocks in this order: (1) add-field-to-form for ALL fields, (2) add-rule AFTER all fields exist.
 - \`remove-rule\` — Remove a rule by name. Params: formId, ruleName. Also removes the inverse rule by default (set removeInverse: false to keep it).
 - **IMPORTANT — Rules vs JavaScript**: Do NOT mix Form Rules and JavaScript on the same form for controlling visibility/state. If the form uses script with onChange handlers, use script for all conditional logic. If the form uses Rules, use Rules for all conditional logic. Binding onChange in script disables that question from triggering Form Rules.
 
