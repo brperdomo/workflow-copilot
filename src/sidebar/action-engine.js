@@ -1073,6 +1073,385 @@ function buildFieldFromTemplate(field, _logEntry) {
   return base;
 }
 
+// ── Form Rule Builder ──
+// Constructs complete rule JSON from simplified LLM input.
+// The LLM provides: condition field(s), operator(s), value(s), effect(s), target(s).
+// The engine resolves field labels→IDs, builds question snapshots, generates
+// allowedOperators/actionOptions metadata, uiJson, ruleString, and inverse rule.
+
+// Static metadata — same for every rule, every condition
+const ALLOWED_OPERATORS = [
+  { label: '!=', value: 'notEqual' },
+  { label: '=', value: 'equal' },
+  { label: '<', value: 'lessThan' },
+  { label: '<=', value: 'lessThanInclusive' },
+  { label: '>', value: 'greaterThan' },
+  { label: '>=', value: 'greaterThanInclusive' },
+  { label: 'contains', value: 'containsValue' },
+  { label: 'does not contain', value: 'doesNotContainValue' },
+  { label: 'is empty', value: 'isEmpty' },
+  { label: 'is not empty', value: 'isNotEmpty' }
+];
+
+const ACTION_OPTIONS = [
+  { label: 'show', value: 'show' },
+  { label: 'hide', value: 'hide' },
+  { label: 'disable', value: 'disable' },
+  { label: 'enable', value: 'enable' },
+  { label: 'read only', value: 'readOnly' },
+  { label: 'editable', value: 'editable' },
+  { label: 'required', value: 'required' },
+  { label: 'unrequired', value: 'unrequired' },
+  { label: 'set answer w/ value', value: 'set_answer_with_value' },
+  { label: 'set answer w/ function', value: 'set_answer_with_function' }
+];
+
+// Operator alias map — normalizes LLM-provided operator strings to internal values
+const OPERATOR_ALIASES = {
+  '=': 'equal', '==': 'equal', '===': 'equal', 'equals': 'equal', 'is': 'equal', 'eq': 'equal',
+  '!=': 'notEqual', '!==': 'notEqual', 'not equal': 'notEqual', 'not equals': 'notEqual',
+  'is not': 'notEqual', 'ne': 'notEqual', 'neq': 'notEqual',
+  '<': 'lessThan', 'less than': 'lessThan', 'lt': 'lessThan',
+  '<=': 'lessThanInclusive', 'less than or equal': 'lessThanInclusive', 'lte': 'lessThanInclusive',
+  '>': 'greaterThan', 'greater than': 'greaterThan', 'gt': 'greaterThan',
+  '>=': 'greaterThanInclusive', 'greater than or equal': 'greaterThanInclusive', 'gte': 'greaterThanInclusive',
+  'contains': 'containsValue', 'includes': 'containsValue',
+  'does not contain': 'doesNotContainValue', 'not contains': 'doesNotContainValue',
+  'excludes': 'doesNotContainValue',
+  'is empty': 'isEmpty', 'empty': 'isEmpty', 'blank': 'isEmpty',
+  'is not empty': 'isNotEmpty', 'not empty': 'isNotEmpty', 'has value': 'isNotEmpty'
+};
+
+// Effect alias map — normalizes LLM-provided action strings
+const EFFECT_ALIASES = {
+  'show': 'show', 'visible': 'show', 'display': 'show',
+  'hide': 'hide', 'hidden': 'hide', 'invisible': 'hide',
+  'disable': 'disable', 'disabled': 'disable',
+  'enable': 'enable', 'enabled': 'enable',
+  'readonly': 'readOnly', 'read only': 'readOnly', 'read-only': 'readOnly',
+  'editable': 'editable', 'edit': 'editable',
+  'required': 'required', 'require': 'required', 'mandatory': 'required',
+  'unrequired': 'unrequired', 'unrequire': 'unrequired', 'optional': 'unrequired',
+  'not required': 'unrequired',
+  'set answer': 'set_answer_with_value', 'set value': 'set_answer_with_value',
+  'set answer with value': 'set_answer_with_value',
+  'set answer with function': 'set_answer_with_function', 'calculate': 'set_answer_with_function'
+};
+
+// Inverse effect mapping — for auto-generating inverse rules
+const INVERSE_EFFECTS = {
+  'show': 'hide', 'hide': 'show',
+  'enable': 'disable', 'disable': 'enable',
+  'editable': 'readOnly', 'readOnly': 'editable',
+  'required': 'unrequired', 'unrequired': 'required'
+};
+
+// Inverse operator mapping — for auto-generating inverse rules
+const INVERSE_OPERATORS = {
+  'equal': 'notEqual', 'notEqual': 'equal',
+  'lessThan': 'greaterThanInclusive', 'greaterThanInclusive': 'lessThan',
+  'lessThanInclusive': 'greaterThan', 'greaterThan': 'lessThanInclusive',
+  'containsValue': 'doesNotContainValue', 'doesNotContainValue': 'containsValue',
+  'isEmpty': 'isNotEmpty', 'isNotEmpty': 'isEmpty'
+};
+
+function normalizeOperator(raw) {
+  if (!raw) return 'equal';
+  const alias = OPERATOR_ALIASES[raw.toLowerCase ? raw.toLowerCase() : raw];
+  return alias || raw;
+}
+
+function normalizeEffect(raw) {
+  if (!raw) return 'show';
+  const alias = EFFECT_ALIASES[raw.toLowerCase ? raw.toLowerCase() : raw];
+  return alias || raw;
+}
+
+// Resolves a field identifier (label or ClientID) to the actual field object from the form layout.
+// Returns { field, id } where id is the numeric field id (used as fact/target in rules).
+function resolveFieldForRule(formData, identifier) {
+  const layout = formData.layout || [];
+  for (const section of layout) {
+    for (const container of (section.contents || [])) {
+      for (const column of (container.columns || [])) {
+        for (const item of (column.items || [])) {
+          if (item.ClientID && (
+            String(item.ClientID) === String(identifier) ||
+            (item.Label && item.Label.toLowerCase() === String(identifier).toLowerCase()) ||
+            (item.Label && item.Label.toLowerCase().includes(String(identifier).toLowerCase()))
+          )) {
+            return { field: item, id: item.id || item.ClientID };
+          }
+        }
+      }
+    }
+  }
+  return null;
+}
+
+// Resolves a section identifier (label or ClientID) to the section object.
+function resolveSectionForRule(formData, identifier) {
+  const layout = formData.layout || [];
+  for (const section of layout) {
+    if (String(section.ClientID) === String(identifier) ||
+        (section.Label && section.Label.toLowerCase() === String(identifier).toLowerCase()) ||
+        (section.Label && section.Label.toLowerCase().includes(String(identifier).toLowerCase()))) {
+      return { section, id: section.ClientID || section.id };
+    }
+  }
+  return null;
+}
+
+// Builds the question snapshot embedded in each condition (full field object clone)
+function buildQuestionSnapshot(field) {
+  const snap = {
+    displayName: field.displayName || field.QuestionType || '',
+    QuestionType: field.QuestionType,
+    Label: field.Label,
+    type: field.type || 'Question_Type',
+    flex: field.flex || 100,
+    ClientID: field.id || field.ClientID,
+    class: field.class || '',
+    show: field.show !== false,
+    validation: field.validation || {},
+    events: { onChange: null, onBlur: null, onFocus: null },
+    Answer: field.Answer || null,
+    new: false,
+    id: field.id || field.ClientID,
+    showEditPanel: false,
+    loaded: true,
+    isdirty: false,
+    originalAnswer: field.originalAnswer || field.Answer || null,
+    islive: false,
+    stopBlurSave: field.stopBlurSave || false,
+    labelForDropDown: `${field.id || field.ClientID} / ${field.Label}`,
+    labelForRuleString: field.Label
+  };
+  // Type-specific snapshot properties
+  if (field.Choices) snap.Choices = field.Choices;
+  if (field.columnOrRow) snap.columnOrRow = field.columnOrRow;
+  if (field.dbSettings) snap.dbSettings = field.dbSettings;
+  if (field.multiple !== undefined) snap.multiple = field.multiple;
+  if (field.selectedValue !== undefined) snap.selectedValue = field.selectedValue;
+  return snap;
+}
+
+// Builds the functionSourceTargets for effects (list of number fields for calculations)
+function buildFunctionSourceTargets(formData) {
+  const choices = [];
+  const layout = formData.layout || [];
+  for (const section of layout) {
+    for (const container of (section.contents || [])) {
+      for (const column of (container.columns || [])) {
+        for (const item of (column.items || [])) {
+          if (item.QuestionType === 'Number' || item.QuestionType === 'ShortText' ||
+              item.QuestionType === 'LongText' || item.QuestionType === 'DbSelectList') {
+            const varName = String.fromCharCode(97 + choices.length); // a, b, c, ...
+            choices.push({
+              Value: `${item.id || item.ClientID}|${varName} `,
+              Label: `${item.Label} as '${varName}'`
+            });
+          }
+        }
+      }
+    }
+  }
+  return { Choices: choices, multiple: true };
+}
+
+// Builds the uiJson string for the rule builder UI
+function buildUiJson(conditions, logic) {
+  const rules = conditions.map(c => ({
+    fact: c.fact,
+    operator: c.operator,
+    value: c.value,
+    allowedOperators: ALLOWED_OPERATORS,
+    noValueNeeded: c.noValueNeeded || false,
+    selectListAnswer: c.selectListAnswer || false,
+    question: c.question
+  }));
+  return JSON.stringify({
+    group: {
+      condition: logic === 'any' ? 'ANY' : 'ALL',
+      rules: rules
+    }
+  });
+}
+
+// Builds the human-readable ruleString
+function buildRuleString(conditions, logic) {
+  const parts = conditions.map(c => {
+    const label = c.question ? c.question.labelForRuleString || c.question.Label : String(c.fact);
+    const opMap = {
+      'equal': '=', 'notEqual': '!=',
+      'lessThan': '<', 'lessThanInclusive': '<=',
+      'greaterThan': '>', 'greaterThanInclusive': '>=',
+      'containsValue': 'contains', 'doesNotContainValue': 'does not contain',
+      'isEmpty': 'is empty', 'isNotEmpty': 'is not empty'
+    };
+    const op = opMap[c.operator] || c.operator;
+    if (c.noValueNeeded) return `${label} ${op}`;
+    return `${label} ${op} ${c.value}`;
+  });
+  const joiner = logic === 'any' ? ' <strong>OR</strong> ' : ' <strong>AND</strong> ';
+  return '(' + parts.join(joiner) + ')';
+}
+
+// Builds a complete rule object from simplified params.
+// params: { name, logic ("all"|"any"), conditions: [{field, operator, value}], effects: [{action, target, targetType, value?}] }
+// formData: the full form object (from GET) used to resolve fields and build snapshots
+function buildRule(params, formData, _logEntry) {
+  const logic = (params.logic || 'all').toLowerCase();
+  const functionSourceTargets = buildFunctionSourceTargets(formData);
+
+  // Build conditions
+  const builtConditions = [];
+  const flattenedFacts = [];
+
+  for (const cond of (params.conditions || [])) {
+    const operator = normalizeOperator(cond.operator);
+    const noValueNeeded = (operator === 'isEmpty' || operator === 'isNotEmpty');
+
+    // Resolve the condition field
+    const resolved = resolveFieldForRule(formData, cond.field);
+    if (!resolved) {
+      if (_logEntry) {
+        actionLog.addError(_logEntry, `Rule condition field "${cond.field}" not found on form`);
+      }
+      throw new Error(`Rule condition field "${cond.field}" not found on form`);
+    }
+
+    const questionSnapshot = buildQuestionSnapshot(resolved.field);
+    const hasChoices = resolved.field.Choices && resolved.field.Choices.length > 0;
+
+    const builtCond = {
+      fact: String(resolved.id),
+      operator: operator,
+      value: noValueNeeded ? '' : (cond.value || ''),
+      allowedOperators: ALLOWED_OPERATORS,
+      noValueNeeded: noValueNeeded,
+      selectListAnswer: hasChoices,
+      question: questionSnapshot
+    };
+
+    builtConditions.push(builtCond);
+    if (!flattenedFacts.includes(String(resolved.id))) {
+      flattenedFacts.push(String(resolved.id));
+    }
+  }
+
+  // Build effects
+  const builtEffects = [];
+  for (const eff of (params.effects || [])) {
+    const action = normalizeEffect(eff.action);
+    const targetType = (eff.targetType || 'question').toLowerCase();
+
+    let targetId;
+    if (targetType === 'section') {
+      const resolved = resolveSectionForRule(formData, eff.target);
+      if (!resolved) {
+        if (_logEntry) actionLog.addError(_logEntry, `Rule effect target section "${eff.target}" not found`);
+        throw new Error(`Rule effect target section "${eff.target}" not found`);
+      }
+      targetId = resolved.id;
+    } else {
+      const resolved = resolveFieldForRule(formData, eff.target);
+      if (!resolved) {
+        if (_logEntry) actionLog.addError(_logEntry, `Rule effect target field "${eff.target}" not found`);
+        throw new Error(`Rule effect target field "${eff.target}" not found`);
+      }
+      targetId = resolved.id || resolved.field.ClientID;
+    }
+
+    const builtEffect = {
+      targetType: targetType,
+      functionSourceTargets: functionSourceTargets,
+      actionOptions: ACTION_OPTIONS,
+      target: targetId,
+      action: action
+    };
+
+    // For section targets, no QuestionType
+    if (targetType === 'question') {
+      const resolved = resolveFieldForRule(formData, eff.target);
+      if (resolved) builtEffect.QuestionType = resolved.field.QuestionType;
+    }
+
+    // For set_answer_with_value
+    if (action === 'set_answer_with_value' && eff.value !== undefined) {
+      builtEffect.value = eff.value;
+    }
+    // For set_answer_with_function
+    if (action === 'set_answer_with_function' && eff.function) {
+      builtEffect.function = eff.function;
+    }
+
+    builtEffects.push(builtEffect);
+  }
+
+  // Assemble the conditions object
+  const conditionsObj = {};
+  conditionsObj[logic === 'any' ? 'any' : 'all'] = builtConditions;
+
+  // Build the rule
+  const rule = {
+    flattenedRuleFacts: flattenedFacts,
+    name: params.name || 'New Rule',
+    uiJson: buildUiJson(builtConditions, logic),
+    ruleString: buildRuleString(builtConditions, logic),
+    conditions: conditionsObj,
+    event: {
+      type: 'ruleEvalTrue',
+      params: {
+        message: 'rule has eval\'d to true',
+        effects: builtEffects
+      }
+    }
+  };
+
+  return rule;
+}
+
+// Auto-generates the inverse of a rule.
+// Flips: conditions (operators inverted), effects (show↔hide, required↔unrequired), logic (any↔all for multi-condition).
+function buildInverseRule(rule) {
+  const inverse = JSON.parse(JSON.stringify(rule)); // deep clone
+  inverse.name = rule.name + ' (Inverse)';
+
+  // Flip logic: ANY→ALL, ALL→ANY (De Morgan's law for inverse)
+  const origLogic = rule.conditions.any ? 'any' : 'all';
+  const inverseLogic = origLogic === 'any' ? 'all' : 'any';
+
+  // Get the original conditions array
+  const origConditions = rule.conditions[origLogic] || [];
+
+  // Invert each condition's operator
+  const invertedConditions = origConditions.map(c => {
+    const inv = JSON.parse(JSON.stringify(c));
+    inv.operator = INVERSE_OPERATORS[c.operator] || c.operator;
+    // For isEmpty/isNotEmpty, update noValueNeeded
+    inv.noValueNeeded = (inv.operator === 'isEmpty' || inv.operator === 'isNotEmpty');
+    return inv;
+  });
+
+  // Set the inverted conditions under the flipped logic key
+  inverse.conditions = {};
+  inverse.conditions[inverseLogic] = invertedConditions;
+
+  // Invert effects
+  inverse.event.params.effects = rule.event.params.effects.map(e => {
+    const inv = JSON.parse(JSON.stringify(e));
+    inv.action = INVERSE_EFFECTS[e.action] || e.action;
+    return inv;
+  }).filter(e => e.action); // Remove effects that have no inverse (e.g., set_answer)
+
+  // Rebuild uiJson and ruleString for inverse
+  inverse.uiJson = buildUiJson(invertedConditions, inverseLogic);
+  inverse.ruleString = buildRuleString(invertedConditions, inverseLogic);
+
+  return inverse;
+}
+
 const ACTION_REGISTRY = {
 
   // ═══════════════════════════════════════
@@ -2781,6 +3160,119 @@ const ACTION_REGISTRY = {
           go.minRowsToShow = String(Math.max(go.rowsSpecified + 3, 6));
 
           return { node: formData };
+        }
+      }
+    ]
+  },
+
+  // ═══════════════════════════════════════
+  // Form Rules Actions
+  // ═══════════════════════════════════════
+
+  'add-rule': {
+    id: 'add-rule',
+    label: 'Add Form Rule',
+    category: 'forms',
+    level: 2,
+    description: 'Add a conditional rule to the form (e.g., if field X = "Yes", show field Y). Fetches the form to resolve field references, builds the full rule JSON with conditions and effects, auto-generates the inverse rule, and saves both.',
+    requiredParams: ['formId', 'name', 'conditions', 'effects'],
+    optionalParams: ['logic', 'createInverse'],
+    steps: [
+      {
+        name: 'Fetch current form',
+        method: 'GET',
+        path: (params) => `/workflow/napi/tasktypes/power-form/${params.formId}/builder`,
+        buildBody: () => null,
+        extractResult: { formData: '' }
+      },
+      {
+        name: 'Build rule and save',
+        method: 'PUT',
+        path: (params) => `/workflow/napi/tasktypes/power-form/${params.formId}/updateSpecificProperty`,
+        buildBody: (params, prevResults) => {
+          const formData = prevResults._rawResponse_0 || prevResults.formData;
+          if (!formData) throw new Error('Could not retrieve form data');
+
+          const existingRules = formData.rules || [];
+
+          // Build the primary rule
+          const rule = buildRule({
+            name: params.name,
+            logic: params.logic || 'all',
+            conditions: params.conditions,
+            effects: params.effects
+          }, formData, _currentLogEntry);
+
+          const newRules = [...existingRules, rule];
+
+          // Auto-generate inverse unless explicitly disabled
+          if (params.createInverse !== false) {
+            const inverse = buildInverseRule(rule);
+            newRules.push(inverse);
+            if (_currentLogEntry) {
+              actionLog.addStepResult(_currentLogEntry, 'Auto-generated inverse rule',
+                { name: inverse.name, ruleString: inverse.ruleString });
+            }
+          }
+
+          return {
+            sid: params.formId,
+            updateThis: { rules: newRules }
+          };
+        }
+      }
+    ]
+  },
+
+  'remove-rule': {
+    id: 'remove-rule',
+    label: 'Remove Form Rule',
+    category: 'forms',
+    level: 2,
+    description: 'Remove a rule from the form by name. Also removes the inverse rule if one exists.',
+    requiredParams: ['formId', 'ruleName'],
+    optionalParams: ['removeInverse'],
+    steps: [
+      {
+        name: 'Fetch current form',
+        method: 'GET',
+        path: (params) => `/workflow/napi/tasktypes/power-form/${params.formId}/builder`,
+        buildBody: () => null,
+        extractResult: { formData: '' }
+      },
+      {
+        name: 'Remove rule and save',
+        method: 'PUT',
+        path: (params) => `/workflow/napi/tasktypes/power-form/${params.formId}/updateSpecificProperty`,
+        buildBody: (params, prevResults) => {
+          const formData = prevResults._rawResponse_0 || prevResults.formData;
+          if (!formData) throw new Error('Could not retrieve form data');
+
+          const existingRules = formData.rules || [];
+          const nameLower = params.ruleName.toLowerCase();
+          const removeInverse = params.removeInverse !== false;
+
+          const filteredRules = existingRules.filter(r => {
+            const rName = (r.name || '').toLowerCase();
+            if (rName === nameLower) return false;
+            if (removeInverse && rName === nameLower + ' (inverse)') return false;
+            return true;
+          });
+
+          if (filteredRules.length === existingRules.length) {
+            throw new Error(`Rule "${params.ruleName}" not found. Available rules: ${existingRules.map(r => r.name).join(', ')}`);
+          }
+
+          const removed = existingRules.length - filteredRules.length;
+          if (_currentLogEntry) {
+            actionLog.addStepResult(_currentLogEntry, `Removed ${removed} rule(s)`,
+              { removed: existingRules.filter(r => !filteredRules.includes(r)).map(r => r.name) });
+          }
+
+          return {
+            sid: params.formId,
+            updateThis: { rules: filteredRules }
+          };
         }
       }
     ]

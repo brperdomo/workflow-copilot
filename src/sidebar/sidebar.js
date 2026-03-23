@@ -1475,6 +1475,16 @@ You have the ability to execute actions directly in the user's Workflow environm
 - **NEVER use update-form-layout** — it has been removed because it risks wiping the entire form. Always use targeted actions instead.
 - \`update-form-javascript\` — Write JS to the form's JavaScript tab. Params: formId, javascript (the code string), mode ("replace" = overwrite all, "append" = add to existing, default "replace"). The engine fetches the form, injects the JS, and saves — you do NOT need get-form-json first.
 - \`update-form-css\` — Write CSS to the form's CSS tab. Params: formId, css (the code string), mode ("replace" | "append", default "replace"). Same GET→modify→PUT pattern as JS.
+- \`add-rule\` — Add a conditional rule to the form. Params: formId, name (rule name), conditions (array), effects (array), [logic: "all"|"any" (default "all")], [createInverse: true|false (default true)].
+  - Each condition: { field: "Label or ClientID", operator: "equals"|"!="|"contains"|"is empty"|etc., value: "the value" }
+  - Each effect: { action: "show"|"hide"|"disable"|"enable"|"required"|"unrequired"|"readOnly"|"editable"|"set answer", target: "Label or ClientID", targetType: "question"|"section" }
+  - The engine resolves field labels to IDs, builds full question snapshots, generates uiJson/ruleString, and auto-creates the inverse rule.
+  - Operators: equal, notEqual, lessThan, lessThanInclusive, greaterThan, greaterThanInclusive, containsValue, doesNotContainValue, isEmpty, isNotEmpty. The engine also accepts aliases like "equals", "!=", "contains", "is empty", etc.
+  - Effects: show, hide, disable, enable, readOnly, editable, required, unrequired, set_answer_with_value, set_answer_with_function. Engine accepts aliases like "visible", "hidden", "mandatory", "optional", etc.
+  - Inverse rules are auto-generated with flipped operators and effects (show↔hide, required↔unrequired, equal↔notEqual, any↔all).
+  - Example: name: "Show Comments", logic: "all", conditions: [{field: "Budgeted?", operator: "equals", value: "No"}], effects: [{action: "show", target: "Comments", targetType: "question"}, {action: "required", target: "Comments", targetType: "question"}]
+- \`remove-rule\` — Remove a rule by name. Params: formId, ruleName. Also removes the inverse rule by default (set removeInverse: false to keep it).
+- **IMPORTANT — Rules vs JavaScript**: Do NOT mix Form Rules and JavaScript on the same form for controlling visibility/state. If the form uses script with onChange handlers, use script for all conditional logic. If the form uses Rules, use Rules for all conditional logic. Binding onChange in script disables that question from triggering Form Rules.
 
 **IMPORTANT — Form Builder JSON structure:**
 The form GET response is: { _id, name, sid, layout: [...sections], script, css, rules, version }
@@ -1678,10 +1688,14 @@ IMPORTANT: Do NOT mix Form Rules and JavaScript. If using script, handle ALL log
 - Forms API: POST /api/forms/create, GET /api/forms/search, GET /api/forms/{formSids}, GET /api/forms/{formSid}/questions
 
 ### Form Rules (no-code):
-- Conditions: question + operator (equals, less than, greater than, contains, does not contain) + value
-- Effects: Show, Hide, Disable, Enable, Required, Unrequired, Set Answer
-- Targets: Question or Section
-- Logic: AND/OR groups. Inverse rules auto-generated.
+- Use the \`add-rule\` action to create rules programmatically. The engine handles all JSON complexity.
+- Conditions: field + operator (equals, notEqual, lessThan, greaterThan, contains, doesNotContain, isEmpty, isNotEmpty) + value
+- Effects: show, hide, disable, enable, readOnly, editable, required, unrequired, set_answer_with_value, set_answer_with_function
+- Targets: question (field) or section (entire collapsible section)
+- Logic: "all" (AND — all conditions must be true) or "any" (OR — any condition can be true)
+- Inverse rules are auto-generated: flips operators (equal↔notEqual), effects (show↔hide), and logic (any↔all per De Morgan's law)
+- Multiple effects per rule: a single rule can show AND require a field, hide a section AND unrequire multiple fields, etc.
+- Common patterns: Radio "Yes"/"No" → show/hide comments field; Select List value → show/hide signature; Hidden milestone field → show/hide approval section
 
 ### Developer Form:
 Custom HTML/JS forms with full control. Tabs: Form Code, View Only Code, Prefill Mappings, Fields To Capture. Use <script id="IntegrifyForm"></script> for helper functions and task variable with prefill data.
