@@ -1446,7 +1446,7 @@ You have the ability to execute actions directly in the user's Workflow environm
 **Level 2 — Form Actions:**
 - \`create-form\` — params: name, [description]
 - \`create-form-with-layout\` — params: name, layout (full JSON)
-- \`add-field-to-form\` — Add a single question/field. Params: formId, field (question object with type:"Question_Type"), [afterClientId].
+- \`add-field-to-form\` — Add a single question/field. Params: formId, field (question object with type:"Question_Type"), [afterClientId], [sectionClientId (label or ID of the target section)], [containerIndex], [columnIndex]. **Use sectionClientId to place a field in a specific section** (e.g., sectionClientId: "Approval Process"). Without it, the field goes into the first section.
 - \`rename-section\` — Rename an existing section. Params: formId, sectionClientId (use current label!), newLabel. Use this when the user says "rename", "relabel", or "change the name of" a section.
 - \`add-section-to-form\` — Add a new layout section. Params: formId, sectionLabel, [insertAfterSectionIndex], [containerColumns], [fields].
 - \`add-container-to-section\` — **Add a container to an EXISTING section.** Params: formId, sectionClientId (the ClientID of the target section), columns (number of columns, e.g. 2), [fields] (optional field objects to put in it). Use this when the user asks to add a multi-column container to a section that already exists.

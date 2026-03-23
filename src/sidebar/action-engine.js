@@ -2770,7 +2770,7 @@ const ACTION_REGISTRY = {
     level: 2,
     description: 'Fetch the current form, add a new field, and save it back',
     requiredParams: ['formId', 'field'],
-    optionalParams: ['afterClientId', 'sectionIndex', 'containerIndex'],
+    optionalParams: ['afterClientId', 'sectionClientId', 'sectionIndex', 'containerIndex', 'columnIndex'],
     steps: [
       {
         name: 'Fetch current form layout',
@@ -2826,17 +2826,29 @@ const ACTION_REGISTRY = {
             }
           }
 
-          // If not inserted yet, add to first section > first container > first column
+          // If not inserted yet, find the target section by label/ClientID or index
           if (!inserted) {
-            const sectionIdx = params.sectionIndex || 0;
-            const section = sections[sectionIdx] || sections[0];
+            let section;
+            if (params.sectionClientId) {
+              // Resolve by label or ClientID using the smart resolver
+              section = findSection(sections, params.sectionClientId);
+              if (!section && _currentLogEntry) {
+                actionLog.addWarning(_currentLogEntry, `Section "${params.sectionClientId}" not found`,
+                  `Falling back to first section. Available: ${sections.map(s => s.Label || s.ClientID).join(', ')}`);
+              }
+            }
+            if (!section) {
+              const sectionIdx = params.sectionIndex || 0;
+              section = sections[sectionIdx] || sections[0];
+            }
             if (section) {
               const contents = section.contents || [];
               const containerIdx = params.containerIndex || 0;
               const container = contents[containerIdx] || contents[0];
               if (container) {
                 const columns = container.columns || [];
-                const column = columns[0];
+                const columnIdx = params.columnIndex || 0;
+                const column = columns[columnIdx] || columns[0];
                 if (column) {
                   if (!column.items) column.items = [];
                   column.items.push(field);
