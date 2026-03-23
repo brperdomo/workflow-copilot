@@ -1614,6 +1614,15 @@ When fetching data from external APIs (Notion, Salesforce, etc.), use this patte
 - \`setup-slack-integration\` — params: slackToken, channelId, [credentialName], [requestName]
 - \`setup-stripe-payment\` — params: stripeSecretKey, [credentialName]
 
+**PREFER BUILT-IN CAPABILITIES OVER JAVASCRIPT:**
+This is a customer-facing tool. Customers should NOT need JavaScript to maintain their forms. Always prefer Workflow's built-in features:
+- **Column sums/totals** → Use footer aggregation (aggregationType: 2 on the column) instead of JS that manually loops and sums
+- **Row calculations** (e.g., Qty × Price = Total) → Use RowAggregation column type instead of JS
+- **Conditional show/hide** → Use Form Rules (add-rule action) instead of JS onChange handlers that toggle field.show
+- **Conditional required/unrequired** → Use Form Rules instead of JS that sets validation.required
+- **Grid column footers** → Built-in with showColumnFooter: true + aggregationType: 2
+Only use JavaScript when there is NO built-in alternative (e.g., complex API chaining, multi-step data transformations, dynamic grid row manipulation, RESTful Element orchestration, pagination loops). When JavaScript IS needed, keep it minimal and well-commented.
+
 **RULES:**
 1. ALWAYS explain what the action will do BEFORE the action block.
 2. NEVER include actual secrets/tokens in the action block.
