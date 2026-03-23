@@ -30,10 +30,58 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === 'EXECUTE_API') {
-    // Execute API call from sidebar (uses the page's auth cookies)
-    executeApiCall(message.payload, sender)
-      .then(result => sendResponse({ success: true, data: result }))
-      .catch(err => sendResponse({ success: false, error: err.message }));
+    // Check if this URL needs to be proxied through the content script (page context)
+    // The /core-service/ endpoints require same-origin requests that only work from page context
+    const url = message.payload.url || '';
+    const needsPageContext = url.includes('/core-service/');
+
+    if (needsPageContext) {
+      // Proxy through content script which runs in page context.
+      // If the content script isn't available (e.g. page not refreshed after extension reload),
+      // programmatically inject it first, then retry.
+      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        if (!tabs[0]) {
+          sendResponse({ success: false, error: 'No active tab found for page-context API call' });
+          return;
+        }
+        const tabId = tabs[0].id;
+        const sendViaContentScript = () => {
+          chrome.tabs.sendMessage(tabId, {
+            type: 'EXECUTE_API_PAGE_CONTEXT',
+            payload: message.payload
+          }, (response) => {
+            if (chrome.runtime.lastError) {
+              sendResponse({ success: false, error: 'Content script not available. Please refresh the Workflow page and try again.' });
+            } else if (response && response.success) {
+              sendResponse(response);
+            } else {
+              sendResponse({ success: false, error: response?.error || 'Page context API call failed' });
+            }
+          });
+        };
+        // Try sending directly first; if it fails, inject the content script and retry
+        chrome.tabs.sendMessage(tabId, { type: 'GET_CONTEXT' }, (testResponse) => {
+          if (chrome.runtime.lastError) {
+            // Content script not loaded — inject it, then retry
+            chrome.scripting.executeScript({
+              target: { tabId },
+              files: ['src/content/context-detector.js']
+            }).then(() => {
+              sendViaContentScript();
+            }).catch(() => {
+              sendResponse({ success: false, error: 'Could not inject content script. Please refresh the Workflow page and try again.' });
+            });
+          } else {
+            sendViaContentScript();
+          }
+        });
+      });
+    } else {
+      // Execute directly from service worker
+      executeApiCall(message.payload, sender)
+        .then(result => sendResponse({ success: true, data: result }))
+        .catch(err => sendResponse({ success: false, error: err.message }));
+    }
     return true; // async response
   }
 

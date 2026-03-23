@@ -1612,6 +1612,99 @@ When fetching data from external APIs (Notion, Salesforce, etc.), use this patte
 - If the RESTful Element does NOT exist yet, \`update-field\` will **automatically create it** when the updates contain restRequest config. No need for a separate add-field step.
 - NEVER try to configure a RESTful Element by replacing the entire form layout. Always use \`update-field\`.
 
+**Level 2 — Report Actions:**
+- \`create-report\` — Create a new report. Params: name, categorySid (REQUIRED — use get-report-categories to find available category SIDs), [objectSid] (process SID), [dataType] ('request'|'task'|'custom', default 'request'), [columns], [filters], [limits], [description], [allowChart], [hideInMyReports]. Creates via core-service first, then adds columns/filters/limits if provided.
+- \`get-report\` — Fetch a report by SID. Params: reportSid
+- \`update-report\` — Update a report (GET→merge→PUT). Params: reportSid, plus any of: [name], [columns] (full replace), [addColumns], [removeColumns] (by alias), [filters] (full replace), [addFilters], [removeFilters] (by expose label), [limits], [description], [allowChart]
+- \`delete-report\` — Delete a report. Params: reportSid
+- \`run-report\` — Run a report with optional filters. Params: reportSid, [filters] (array of {label, value}), [dateFilter] (array ["2024-01-01","2024-12-31"] for date range, or "30" for days)
+- \`search-reports\` — Search reports by name. Params: [search]
+- \`get-report-categories\` — Get the category tree for organizing reports.
+- \`auto-generate-report-columns\` — Auto-generate columns for a report based on its process. Params: reportSid
+- \`export-report\` — Export report data. Params: reportSid, exportType ("csv" or "excel")
+- \`get-report-filters\` — Get exposed filters for a report. Params: reportSid
+
+**Report Concepts — IMPORTANT:**
+Reports have THREE data types (set via dataType):
+- **Request** (default) — One row per request. Shows request-level data (ID, dates, status, requester) plus form field data. Most common.
+- **Task** — One row per task. Shows task-level data (task name, task dates, task status, recipients). Useful for managing assignments, tracking task completion times, and counting iterations. Has extra column sources: Current Task, Any Data, Fixed Value, Data (Matching Iteration), Task (Matching Iteration).
+- **Custom** — SQL queries against internal or external databases. Uses built-in parameters: @user_sid, @date_limit_start, @date_limit_end.
+
+Report types (set via reportType): "Process" (most common) or "Custom".
+
+**"Is Queue" concept**: When a report is a queue, it shows only data related to the current user (their requests, their assigned tasks). Without queue mode, all data is visible regardless of participation.
+
+**Report Column Sources** (what data columns can pull from):
+- **Request**: ID, Date Started, Date Completed, Last Milestone, Last Milestone Date, Subject, Priority, Process Name, Current Task, Current Assignee
+- **Requester**: Name, Email, Department, Title, Division, Cost Center, Location (profile info of who started the request)
+- **Client**: Same profile fields as Requester but for the Client of the process
+- **Client's Manager / Requester's Manager**: Manager profile data
+- **Data**: Form question responses, approval selections — requires selecting a task and then a specific form field. This maps to Task_Input|{fieldId}|{formSid}.
+- **Status**: Current status of a task (completed, initialized, in progress)
+- **Task**: Task name, date started, date completed, task status
+- **Task Completer / Task Recipient**: Profile info for who completed or was assigned a task
+- **Task Completer's Manager / Task Recipient's Manager**: Manager profile data
+- **Current Task** (Task reports only): Task attributes for viewing assignments, counts, timing metrics
+- **Any Data** (Task reports only): Generic access via Label, ID, or Property. WARNING: non-indexed full table scans — use sparingly.
+- **Fixed Value** (Task reports only): User-entered static values
+- **Data (Matching Iteration)** / **Task (Matching Iteration)** (Task reports only): Data for current task iteration
+
+**Report column format:**
+Each column can use either friendly names or explicit mappings:
+- Friendly: { field: "Request ID", alias: "ID", width: "65", sort: "Desc", format: "Date" }
+- Explicit: { mapping_val: "Task_Input|1621267267745|b3af6685-...", mapping_text: "Data - Form - Field", alias: "Project Name", width: "220" }
+- For form fields: { field: "Project Title", formFieldId: "1621267267745", formSid: "b3af6685-...", alias: "Project Name" }
+
+Column properties:
+- alias: Display name (replaces default mapping_text)
+- width: Pixel width as string (e.g., "120")
+- sort: "Asc" or "Desc" (only one column should have a sort)
+- sortable: "Yes" or "No" — whether end users can click to sort
+- format: "Date", "Short Date", "Long Date", "Number", "Currency", "Percent", "Hyperlink", "Attachment - icon", "Request Link", "Task Link", "Task Manage Link"
+- aggregate: "Count", "Sum", "Average", "Min", "Max" — shown in column footer
+- chartoption: "Series" or "Datapoint" — for chart-enabled reports
+
+**Standard report column fields** (resolved automatically by the engine):
+- Request: "Request ID", "Status"/"Last Milestone", "Process Name", "Date Started"/"Start Date", "Date Completed", "Subject", "Priority", "Current Task", "Current Assignee"
+- Requester: "Requester"/"Requester Name", "Requester Email", "Requester Department", "Requester Title"
+
+**Report filter format:**
+- { field: "Status", operator: "contains", value: "Approved", conjunction: "AND" }
+- Operators: equals (Is), not equals (Is Not), contains, not contains (Does Not Contain), begins with (Starts With), ends with (Ends With), greater than, greater than or equal, less than, less than or equal, is empty, is not empty, is in date range. Plus symbols: =, !=, >, <, >=, <=. Engine normalizes all aliases.
+- Conjunction: "AND" (default) or "OR". Double-click And/Or column to toggle.
+- Grouping: Use groupStart: "(" and groupEnd: ")" to group filters into logical units. E.g., (Filter1 OR Filter2) AND Filter3.
+- Exposed filters: Set expose: "Filter Label" to make a filter editable by end users when running the report. Blank values act as "no filter" defaults.
+- Wildcard: % wildcard supported with Is, Is Not, and Contains operators.
+
+**Report limits format:**
+- { startRange: "2024-01-01", endRange: "2024-12-31", pageSize: 25, publishStatus: "Production" }
+- Keys: startRange (minimum date), endRange (maximum date), dateRange (number of days, e.g. "30" or "60"), pageSize (records per page), exposeDateFilter ("Yes"/"No" — let users pick date range at runtime), hideLink ("Yes"/"No" — hide request/task links), includeLaunchRequest ("Yes"/"No"), userFilter ("Yes"/"No" — only show current user's data), publishStatus ("Development"/"Testing"/"Production"), version (process version, e.g. "1,2" for multiple)
+- Date limits are ENFORCED: even if a user selects a wider range at runtime, the admin-configured limit takes precedence (most restrictive wins).
+
+**Report chart options** (when allowChart is true):
+- Chart types: Line, Pie, Bar, Area, Column
+- Each column must be designated as a "Series" or "Datapoint" via the chartoption property
+- Best practice: Build the report data without charts first, verify aggregation, then add chart settings
+- Configure max data points in the Chart Options tab
+
+**Manage Task Reports** (special Task report type):
+- Allows users to manage tasks (reassign, change status) directly from a report without full Manage permission
+- Requires system setting: AllowManageTaskReports = "yes" (System Settings → System Configuration)
+- MUST have "Task Manage Link" as the FIRST column: { field: "ID For Manage Task", format: "Task Manage Link", source: "Current Task" }
+- MUST have a "Task Status" column
+- Reports need manual refresh after management actions
+
+**KPIs (Key Performance Indicators):**
+- A KPI measures time between the completion of two tasks in a process
+- Defined in Process Design → KPIs tab → ADD NEW KPI
+- Configuration: name, start task, end task, target time, upper threshold
+- Color-coded: Green (at/below target), Yellow (between target and upper threshold), Red (above upper threshold)
+- Display types: Gauge and Bar Chart
+- Options: "Show in Request Detail" toggle, "Allow edit KPI date options" toggle
+- When tasks have multiple iterations, KPI uses the FIRST iteration
+- Dashboard widget: KPIs Widget shows average timespans with color indicators
+- KPI API endpoint: GET /api/reports/kpi/instance/{instanceSid}/process/{processId}/timespan/{startTaskId}/{endTaskId}/{startDate}/{endDate}/{timeUnit}
+
 **Composite Actions (multi-step):**
 - \`setup-slack-integration\` — params: slackToken, channelId, [credentialName], [requestName]
 - \`setup-stripe-payment\` — params: stripeSecretKey, [credentialName]

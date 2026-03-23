@@ -1,23 +1,25 @@
 # Workflow Copilot
 
-AI-powered Chrome extension that integrates into the Nutrient Workflow admin UI as a sidebar panel. Build, modify, and configure forms using natural language instead of manual drag-and-drop.
+AI-powered Chrome extension that integrates into the Nutrient Workflow admin UI as a sidebar panel. Build, modify, and configure forms and reports using natural language instead of manual point-and-click.
 
 ## How It Works
 
 1. User types a natural language request in the sidebar chat
 2. The LLM generates action blocks (structured JSON) describing what to do
-3. The **Action Engine** executes each action via Workflow's Form Builder API — GET the form, surgically modify it, PUT it back
-4. The Form Builder auto-refreshes after each modification
+3. The **Action Engine** executes each action via Workflow's APIs — GET the resource, surgically modify it, PUT it back
+4. The Form Builder / Report Builder auto-refreshes after each modification
 
 The LLM handles intent recognition and API knowledge. The engine handles all JSON surgery, field resolution, template building, and validation. This separation exists because LLMs are unreliable at precise JSON manipulation.
 
 ## Features
 
-- **20+ registered actions** — sections, containers, fields, grid columns/rows, credentials, RESTful requests
+- **30+ registered actions** — forms, reports, grids, credentials, RESTful requests
 - **18 question types** — ShortText, Grid, RESTful Element, FileAttachment, etc. with complete template builders
+- **Reports engine** — create, update, preview reports with columns, filters, limits, and aggregation via dual-backend (MongoDB + core-service) architecture
 - **Grid support** — 10 column types, RowAggregation formulas, footer aggregation, CRUD actions
 - **Smart resolution** — sections/fields resolved by label, partial match, or position (never requires exact IDs)
 - **RESTful Element builder** — auto-normalizes headers, body, auth into the exact array-of-objects format the API expects
+- **Core-service proxy** — content script proxies `/core-service/` API calls from page context for same-origin compliance
 - **Undo system** — stack-based snapshots before every modification
 - **Action Log** — persistent logging of every action lifecycle for debugging
 - **Embedded knowledge base** — 508 API endpoints, 16 field type references, Help Center articles, integration guides
@@ -33,9 +35,9 @@ workflow-copilot/
 │   └── content.css                     # Content script styles
 └── src/
     ├── background/
-    │   └── service-worker.js           # Background worker, message routing
+    │   └── service-worker.js           # Background worker, message routing, core-service proxy
     ├── content/
-    │   └── context-detector.js         # Detects current page context
+    │   └── context-detector.js         # Detects page context, proxies same-origin API calls
     ├── sidebar/
     │   ├── sidebar.html                # Sidebar panel markup
     │   ├── sidebar.js                  # Chat UI, AI integration, system prompt
@@ -84,6 +86,17 @@ workflow-copilot/
 | `update-form-javascript` | Update the form's JavaScript |
 | `update-form-css` | Update the form's CSS |
 
+### Level 2: Report Actions
+| Action | Description |
+|--------|-------------|
+| `create-report` | Create a report via core-service, then add columns/filters/limits |
+| `update-report` | Update report columns, filters, limits, or metadata |
+| `get-report` | Fetch a report by SID |
+| `get-report-categories` | List available report categories |
+| `get-report-columns` | Get available columns for a process |
+| `preview-report` | Preview report data with current configuration |
+| `delete-report` | Delete a report by SID |
+
 ### Level 3: Grid Actions
 | Action | Description |
 |--------|-------------|
@@ -97,6 +110,14 @@ workflow-copilot/
 |--------|-------------|
 | `setup-slack-integration` | Credential + REST request for Slack |
 | `setup-stripe-payment` | Credential + REST request for Stripe |
+
+## Architecture Notes
+
+### Dual-Backend Report Creation
+Workflow reports live in two backends: MongoDB (via `/api/reports`) and a SQL-based core-service (via `/core-service/reports/`). Reports must be registered in **both** for previews and execution to work. The `create-report` action handles this as a two-step flow: first creates the shell via `POST /core-service/reports/save/script/`, then adds columns/filters/limits via `PUT /api/reports/:sid`.
+
+### Core-Service Proxy
+The `/core-service/` endpoints require same-origin requests that fail from the `chrome-extension://` origin. The service worker detects these URLs and proxies them through the content script, which runs in the page's origin context. If the content script isn't loaded (e.g., after extension reload), the service worker auto-injects it via `chrome.scripting.executeScript`.
 
 ## AI Providers
 

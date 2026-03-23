@@ -216,6 +216,47 @@
       sendResponse(detectContext());
     }
 
+    if (message.type === 'EXECUTE_API_PAGE_CONTEXT') {
+      // Proxy API calls through the content script (page context) for endpoints
+      // that require same-origin requests (e.g. /core-service/)
+      const { method, url, headers, body } = message.payload;
+      (async () => {
+        try {
+          const fetchOptions = {
+            method: method || 'GET',
+            headers: headers || {},
+            credentials: 'include'
+          };
+          if (body && method !== 'GET') {
+            fetchOptions.body = typeof body === 'string' ? body : JSON.stringify(body);
+            if (!fetchOptions.headers['Content-Type']) {
+              fetchOptions.headers['Content-Type'] = 'application/json';
+            }
+          }
+          const response = await fetch(url, fetchOptions);
+          const contentType = response.headers.get('content-type');
+          let data;
+          if (contentType && contentType.includes('application/json')) {
+            data = await response.json();
+          } else {
+            data = await response.text();
+          }
+          sendResponse({
+            success: true,
+            data: {
+              status: response.status,
+              statusText: response.statusText,
+              headers: Object.fromEntries(response.headers.entries()),
+              data
+            }
+          });
+        } catch (err) {
+          sendResponse({ success: false, error: err.message });
+        }
+      })();
+      return true; // async response
+    }
+
     if (message.type === 'REFRESH_FORM_BUILDER') {
       try {
         // The Form Builder lives inside ngWidgetIframe

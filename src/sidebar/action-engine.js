@@ -800,6 +800,335 @@ function normalizeClientID(clientId, questionType, _logEntry) {
   return corrected;
 }
 
+// ── Report Normalizers & Helpers ──
+
+// Standard report column mapping_val patterns for common request fields
+const STANDARD_REPORT_COLUMNS = {
+  // Request-level fields
+  'id': { mapping_val: 'Request|ID', mapping_text: 'Request - ID' },
+  'request id': { mapping_val: 'Request|ID', mapping_text: 'Request - ID' },
+  'status': { mapping_val: 'Request|LastMilestone', mapping_text: 'Request - Last Milestone' },
+  'last milestone': { mapping_val: 'Request|LastMilestone', mapping_text: 'Request - Last Milestone' },
+  'milestone': { mapping_val: 'Request|LastMilestone', mapping_text: 'Request - Last Milestone' },
+  'process name': { mapping_val: 'Request|ProcessName', mapping_text: 'Request - Process Name' },
+  'process': { mapping_val: 'Request|ProcessName', mapping_text: 'Request - Process Name' },
+  'date started': { mapping_val: 'Request|StartDate', mapping_text: 'Request - Date Started' },
+  'start date': { mapping_val: 'Request|StartDate', mapping_text: 'Request - Date Started' },
+  'date entered': { mapping_val: 'Request|StartDate', mapping_text: 'Request - Date Started' },
+  'date completed': { mapping_val: 'Request|CompletedDate', mapping_text: 'Request - Date Completed' },
+  'completed date': { mapping_val: 'Request|CompletedDate', mapping_text: 'Request - Date Completed' },
+  'subject': { mapping_val: 'Request|Subject', mapping_text: 'Request - Subject' },
+  'priority': { mapping_val: 'Request|Priority', mapping_text: 'Request - Priority' },
+  'current task': { mapping_val: 'Request|CurrentTaskName', mapping_text: 'Request - Current Task' },
+  'current assignee': { mapping_val: 'Request|CurrentAssignee', mapping_text: 'Request - Current Assignee' },
+  // Requester-level fields
+  'requester': { mapping_val: 'Requester|Name', mapping_text: 'Requester - Name' },
+  'requester name': { mapping_val: 'Requester|Name', mapping_text: 'Requester - Name' },
+  'requester email': { mapping_val: 'Requester|Email', mapping_text: 'Requester - Email' },
+  'requester department': { mapping_val: 'Requester|Department', mapping_text: 'Requester - Department' },
+  'requester title': { mapping_val: 'Requester|Title', mapping_text: 'Requester - Title' },
+  'requester division': { mapping_val: 'Requester|Division', mapping_text: 'Requester - Division' },
+  'requester cost center': { mapping_val: 'Requester|CostCenter', mapping_text: 'Requester - Cost Center' },
+  'requester location': { mapping_val: 'Requester|Location', mapping_text: 'Requester - Location' },
+  // Client-level fields
+  'client': { mapping_val: 'Client|Name', mapping_text: 'Client - Name' },
+  'client name': { mapping_val: 'Client|Name', mapping_text: 'Client - Name' },
+  'client email': { mapping_val: 'Client|Email', mapping_text: 'Client - Email' },
+  'client department': { mapping_val: 'Client|Department', mapping_text: 'Client - Department' },
+  'client title': { mapping_val: 'Client|Title', mapping_text: 'Client - Title' },
+  // Task-level fields (for Task reports)
+  'task name': { mapping_val: 'Task|TaskName', mapping_text: 'Task - Task Name' },
+  'task status': { mapping_val: 'Task|TaskStatus', mapping_text: 'Task - Task Status' },
+  'task date started': { mapping_val: 'Task|StartDate', mapping_text: 'Task - Date Started' },
+  'task date completed': { mapping_val: 'Task|CompletedDate', mapping_text: 'Task - Date Completed' },
+  // Task Completer / Recipient
+  'task completer': { mapping_val: 'TaskCompleter|Name', mapping_text: 'Task Completer - Name' },
+  'task completer name': { mapping_val: 'TaskCompleter|Name', mapping_text: 'Task Completer - Name' },
+  'task completer email': { mapping_val: 'TaskCompleter|Email', mapping_text: 'Task Completer - Email' },
+  'task recipient': { mapping_val: 'TaskRecipient|Name', mapping_text: 'Task Recipient - Name' },
+  'task recipient name': { mapping_val: 'TaskRecipient|Name', mapping_text: 'Task Recipient - Name' },
+  'task recipient email': { mapping_val: 'TaskRecipient|Email', mapping_text: 'Task Recipient - Email' },
+  // Status
+  'task current status': { mapping_val: 'Status|TaskStatus', mapping_text: 'Status - Task Status' },
+  // Last milestone date
+  'last milestone date': { mapping_val: 'Request|LastMilestoneDate', mapping_text: 'Request - Last Milestone Date' },
+  'milestone date': { mapping_val: 'Request|LastMilestoneDate', mapping_text: 'Request - Last Milestone Date' }
+};
+
+// Report filter operator aliases (LLM-friendly → API values)
+const REPORT_OPERATOR_ALIASES = {
+  'equals': 'Equals', 'equal': 'Equals', '=': 'Equals', '==': 'Equals',
+  'not equals': 'Not_Equals', 'not equal': 'Not_Equals', '!=': 'Not_Equals', '<>': 'Not_Equals',
+  'contains': 'Contains', 'like': 'Contains', 'includes': 'Contains',
+  'not contains': 'Not_Contains', 'does not contain': 'Not_Contains', 'not like': 'Not_Contains',
+  'begins with': 'Begins_With', 'starts with': 'Begins_With', 'startswith': 'Begins_With',
+  'ends with': 'Ends_With', 'endswith': 'Ends_With',
+  'greater than': 'Greater_Than', '>': 'Greater_Than', 'gt': 'Greater_Than',
+  'greater than or equal': 'Greater_Than_Eq_To', '>=': 'Greater_Than_Eq_To', 'gte': 'Greater_Than_Eq_To',
+  'less than': 'Less_Than', '<': 'Less_Than', 'lt': 'Less_Than',
+  'less than or equal': 'Less_Than_Eq_To', '<=': 'Less_Than_Eq_To', 'lte': 'Less_Than_Eq_To',
+  'is empty': 'Is_Empty', 'empty': 'Is_Empty', 'blank': 'Is_Empty',
+  'is not empty': 'Is_Not_Empty', 'not empty': 'Is_Not_Empty', 'not blank': 'Is_Not_Empty'
+};
+
+// Report column format aliases
+const REPORT_FORMAT_ALIASES = {
+  'date': 'Date', 'short date': 'Short Date', 'long date': 'Long Date',
+  'currency': 'Currency', 'money': 'Currency', '$': 'Currency',
+  'number': 'Number', 'percent': 'Percent', '%': 'Percent',
+  'attachment': 'Attachment - icon', 'attachment icon': 'Attachment - icon',
+  'link': 'Link', 'email': 'Email'
+};
+
+// Report column aggregate aliases
+const REPORT_AGGREGATE_ALIASES = {
+  'count': 'Count', 'sum': 'Sum', 'average': 'Average', 'avg': 'Average',
+  'min': 'Min', 'minimum': 'Min', 'max': 'Max', 'maximum': 'Max'
+};
+
+// Normalize a single report column from LLM-friendly format to API format
+function normalizeReportColumn(col, index, _logEntry) {
+  // If already in @-prefixed format, pass through
+  if (col['@alias'] !== undefined) return col;
+
+  const normalized = {};
+
+  // Map friendly names to @-prefixed API keys (only include non-empty values)
+  normalized['@alias'] = col.alias || col.name || col.label || col.displayName || '';
+  if (col.width) normalized['@width'] = String(col.width);
+  if (col.sort) normalized['@sort'] = col.sort;
+  normalized['@sortable'] = col.sortable || 'Yes';
+  normalized.index = index;
+  normalized.isSelected = col.isSelected !== undefined ? col.isSelected : false;
+
+  // Normalize format (only include if provided)
+  if (col.format) {
+    const formatLower = col.format.toLowerCase();
+    normalized['@format'] = REPORT_FORMAT_ALIASES[formatLower] || col.format;
+    if (normalized['@format'] !== col.format && _logEntry) {
+      actionLog.addNormalization(_logEntry, 'column.format', col.format, normalized['@format']);
+    }
+  }
+
+  // Normalize aggregate (only include if provided)
+  if (col.aggregate) {
+    const aggLower = col.aggregate.toLowerCase();
+    normalized['@aggregate'] = REPORT_AGGREGATE_ALIASES[aggLower] || col.aggregate;
+    if (normalized['@aggregate'] !== col.aggregate && _logEntry) {
+      actionLog.addNormalization(_logEntry, 'column.aggregate', col.aggregate, normalized['@aggregate']);
+    }
+  }
+
+  // Chart option (only include if provided)
+  if (col.chartoption || col.chartOption) {
+    normalized['@chartoption'] = col.chartoption || col.chartOption;
+  }
+
+  // Resolve mapping_val — either from standard columns or from explicit mapping
+  if (col.mapping_val && col.mapping_text) {
+    // Explicit mapping provided
+    normalized.mapping_val = col.mapping_val;
+    normalized.mapping_text = col.mapping_text;
+  } else if (col.field) {
+    // LLM provided a field reference — try to resolve
+    const fieldLower = col.field.toLowerCase().trim();
+    const standard = STANDARD_REPORT_COLUMNS[fieldLower];
+    if (standard) {
+      normalized.mapping_val = standard.mapping_val;
+      normalized.mapping_text = standard.mapping_text;
+      if (_logEntry) {
+        actionLog.addNormalization(_logEntry, 'column.field', col.field, `resolved to ${standard.mapping_val}`);
+      }
+    } else if (col.formFieldId && col.formSid) {
+      // Form field reference: Task_Input|{fieldId}|{formSid}
+      normalized.mapping_val = `Task_Input|${col.formFieldId}|${col.formSid}`;
+      normalized.mapping_text = `Data - ${col.formName || 'Form'} - ${col.alias || col.name || col.field}`;
+    } else {
+      // Can't resolve — pass through as-is and warn
+      normalized.mapping_val = col.field;
+      normalized.mapping_text = col.field;
+      if (_logEntry) {
+        actionLog.addWarning(_logEntry, `Could not resolve column field "${col.field}"`,
+          'Provide mapping_val/mapping_text explicitly, or use standard field names like "Request ID", "Status", "Requester".');
+      }
+    }
+  } else if (col.mapping_val) {
+    normalized.mapping_val = col.mapping_val;
+    normalized.mapping_text = col.mapping_text || col.mapping_val;
+  }
+
+  return normalized;
+}
+
+// Normalize a single report filter from LLM-friendly format to API format
+function normalizeReportFilter(filter, _logEntry) {
+  // If already in @-prefixed format, pass through
+  if (filter['@operator'] !== undefined) return filter;
+
+  const normalized = {};
+
+  // Normalize operator
+  const rawOp = (filter.operator || 'Contains').toLowerCase().trim();
+  const resolvedOp = REPORT_OPERATOR_ALIASES[rawOp] || filter.operator || 'Contains';
+  if (resolvedOp !== filter.operator && _logEntry) {
+    actionLog.addNormalization(_logEntry, 'filter.operator', filter.operator, resolvedOp);
+  }
+  normalized['@operator'] = resolvedOp;
+
+  // Conjunction
+  normalized['@conjunction'] = filter.conjunction || filter.logic || 'AND';
+
+  // Grouping (only include when present)
+  const groupStart = filter.groupStart || filter.group_start || '';
+  const groupEnd = filter.groupEnd || filter.group_end || '';
+  if (groupStart) normalized['@group_start'] = groupStart;
+  if (groupEnd) normalized['@group_end'] = groupEnd;
+
+  // Expose (makes the filter available to end users when running the report)
+  if (filter.expose) normalized.expose = filter.expose;
+
+  // Value and text
+  normalized.value = filter.value !== undefined ? String(filter.value) : '';
+  normalized.text = filter.text || normalized.value;
+
+  // Resolve mapping
+  if (filter.mapping_val && filter.mapping_text) {
+    normalized.mapping_val = filter.mapping_val;
+    normalized.mapping_text = filter.mapping_text;
+  } else if (filter.field) {
+    const fieldLower = filter.field.toLowerCase().trim();
+    const standard = STANDARD_REPORT_COLUMNS[fieldLower];
+    if (standard) {
+      normalized.mapping_val = standard.mapping_val;
+      normalized.mapping_text = standard.mapping_text;
+      if (_logEntry) {
+        actionLog.addNormalization(_logEntry, 'filter.field', filter.field, `resolved to ${standard.mapping_val}`);
+      }
+    } else if (filter.formFieldId && filter.formSid) {
+      normalized.mapping_val = `Task_Input|${filter.formFieldId}|${filter.formSid}`;
+      normalized.mapping_text = `Data - ${filter.formName || 'Form'} - ${filter.field}`;
+    } else {
+      normalized.mapping_val = filter.field;
+      normalized.mapping_text = filter.field;
+      if (_logEntry) {
+        actionLog.addWarning(_logEntry, `Could not resolve filter field "${filter.field}"`,
+          'Provide mapping_val/mapping_text explicitly.');
+      }
+    }
+  } else if (filter.mapping_val) {
+    normalized.mapping_val = filter.mapping_val;
+    normalized.mapping_text = filter.mapping_text || filter.mapping_val;
+  }
+
+  return normalized;
+}
+
+// Normalize limits from LLM-friendly format to API format
+function normalizeReportLimits(limits, _logEntry) {
+  const normalized = {};
+  if (!limits) limits = {};
+
+  // Map friendly keys to API keys
+  const keyMap = {
+    'startRange': 'StartRange', 'startDate': 'StartRange', 'start': 'StartRange',
+    'endRange': 'EndRange', 'endDate': 'EndRange', 'end': 'EndRange',
+    'dateRange': 'DateRange', 'days': 'DateRange',
+    'pageSize': 'PageSize', 'limit': 'PageSize', 'perPage': 'PageSize',
+    'exposeDateFilter': 'ExposeDateFilter', 'showDateFilter': 'ExposeDateFilter',
+    'hideLink': 'HideLink',
+    'includeLaunchRequest': 'IncludeLaunchRequest',
+    'userFilter': 'UserFilter',
+    'publishStatus': 'PublishStatus', 'status': 'PublishStatus',
+    'version': 'Version'
+  };
+
+  for (const [key, value] of Object.entries(limits)) {
+    // Check if it's already a correct key (capitalized)
+    const normalizedKey = keyMap[key] || key;
+    const strValue = String(value);
+
+    // Normalize boolean-like values for Yes/No fields
+    if (['ExposeDateFilter', 'HideLink', 'IncludeLaunchRequest', 'UserFilter'].includes(normalizedKey)) {
+      if (value === true || strValue.toLowerCase() === 'true') {
+        normalized[normalizedKey] = 'Yes';
+      } else if (value === false || strValue.toLowerCase() === 'false') {
+        normalized[normalizedKey] = 'No';
+      } else {
+        normalized[normalizedKey] = strValue;
+      }
+    } else {
+      normalized[normalizedKey] = strValue;
+    }
+
+    if (normalizedKey !== key && _logEntry) {
+      actionLog.addNormalization(_logEntry, 'limits.key', key, normalizedKey);
+    }
+  }
+
+  // Defaults
+  if (!normalized.StartRange) normalized.StartRange = '2018-01-01';
+  if (!normalized.PageSize) normalized.PageSize = '25';
+  if (!normalized.ExposeDateFilter) normalized.ExposeDateFilter = 'No';
+  if (!normalized.HideLink) normalized.HideLink = 'No';
+  if (!normalized.IncludeLaunchRequest) normalized.IncludeLaunchRequest = 'No';
+  if (!normalized.UserFilter) normalized.UserFilter = 'No';
+  if (!normalized.PublishStatus) normalized.PublishStatus = 'Development';
+  if (!normalized.Version) normalized.Version = '2';
+
+  return normalized;
+}
+
+// Build complete report JSON from LLM-friendly params
+// Based on actual API format (GET /api/reports/{sid}) — NOT the IRML XML format.
+// The API uses: name, objectSid, objectType, categorySid, description, optionsBMask,
+// columns (array of {column: [...]}), filters (array of {filter: [...]}), limits (object).
+// Fields like reportType, dataType are IRML-only.
+// allowChart and hideInMyReports ARE accepted by the JSON API and must be included.
+function buildReportJSON(params, _logEntry) {
+  const report = {};
+
+  // Top-level metadata (only fields the API accepts)
+  report.name = params.name || 'New Report';
+  report.objectType = params.objectType || 'Process';
+  report.objectSid = params.objectSid || params.processSid || '';
+  report.categorySid = params.categorySid || '';
+  report.description = params.description || '';
+  report.optionsBMask = params.optionsBMask || 0;
+  report.allowChart = params.allowChart === true;
+  report.hideInMyReports = params.hideInMyReports === true;
+
+  // Normalize columns
+  if (params.columns && Array.isArray(params.columns)) {
+    report.columns = [{
+      column: params.columns.map((col, i) => normalizeReportColumn(col, i, _logEntry))
+    }];
+  } else {
+    report.columns = [];
+  }
+
+  // Normalize filters
+  if (params.filters && Array.isArray(params.filters)) {
+    report.filters = [{
+      filter: params.filters.map(f => normalizeReportFilter(f, _logEntry))
+    }];
+  } else {
+    report.filters = [];
+  }
+
+  // Normalize limits
+  report.limits = normalizeReportLimits(params.limits, _logEntry);
+
+  if (_logEntry) {
+    actionLog.addStepResult(_logEntry, 'Report JSON built', true, {
+      columns: (report.columns[0]?.column || []).length,
+      filters: (report.filters[0]?.filter || []).length,
+      limits: Object.keys(report.limits).length
+    });
+  }
+
+  return report;
+}
+
 function buildFieldFromTemplate(field, _logEntry) {
   const timestamp = Date.now().toString();
 
@@ -3290,6 +3619,333 @@ const ACTION_REGISTRY = {
     ]
   },
 
+  // ── Report Actions ──
+  'create-report': {
+    id: 'create-report',
+    label: 'Create Report',
+    category: 'reports',
+    level: 2,
+    description: 'Create a new report with columns, filters, and limits. categorySid is REQUIRED by the API. The report is first created as a shell, then columns/filters/limits are added if provided.',
+    requiredParams: ['name', 'categorySid'],
+    optionalParams: ['objectSid', 'columns', 'filters', 'limits', 'description', 'objectType', 'dataType', 'allowChart', 'hideInMyReports', 'isQueue'],
+    steps: [
+      {
+        name: 'Create report',
+        method: 'POST',
+        path: () => '/core-service/reports/save/script/',
+        buildBody: (params) => {
+          // Core-service uses PascalCase/mixed-case field names
+          // DataType: 0 = Request rows, 1 = Task rows, 2 = Custom SQL
+          const dataTypeMap = { 'request': 0, 'task': 1, 'custom': 2 };
+          const dataType = dataTypeMap[(params.dataType || 'request').toLowerCase()] || 0;
+          return {
+            name: params.name,
+            categorySid: params.categorySid,
+            description: params.description || '',
+            AllowChart: params.allowChart || false,
+            ObjectSID: params.objectSid || params.processSid || '',
+            ReportType: 0,
+            DataType: dataType
+          };
+        },
+        extractResult: { createdReport: '' }
+      },
+      {
+        name: 'Add columns, filters, and limits',
+        // Only run this step if columns, filters, or limits were provided
+        condition: (params) => !!(params.columns || params.filters || params.limits),
+        method: 'PUT',
+        path: (params, prevResults) => {
+          const created = prevResults?.createdReport || prevResults?._rawResponse_0;
+          const sid = created?.SID || created?.sid;
+          if (!sid) throw new Error('Could not get SID from created report');
+          return `/api/reports/${sid}`;
+        },
+        buildBody: (params, prevResults) => {
+          const created = prevResults._rawResponse_0 || prevResults.createdReport;
+          const sid = created?.SID || created?.sid;
+          // Build the update body with normalized columns/filters/limits
+          const body = buildReportJSON(params, _currentLogEntry);
+          // Ensure the SID is carried over
+          body.sid = sid;
+          return body;
+        }
+      }
+    ]
+  },
+
+  'get-report': {
+    id: 'get-report',
+    label: 'Get Report',
+    category: 'reports',
+    level: 1,
+    description: 'Fetch a report by SID to inspect its columns, filters, and limits.',
+    requiredParams: ['reportSid'],
+    optionalParams: [],
+    steps: [
+      {
+        name: 'Fetch report',
+        method: 'GET',
+        path: (params) => `/api/reports/${params.reportSid}`,
+        buildBody: () => null
+      }
+    ]
+  },
+
+  'update-report': {
+    id: 'update-report',
+    label: 'Update Report',
+    category: 'reports',
+    level: 2,
+    description: 'Update an existing report — merge columns, filters, limits, or metadata.',
+    requiredParams: ['reportSid'],
+    optionalParams: ['name', 'columns', 'filters', 'limits', 'description', 'categorySid', 'allowChart', 'hideInMyReports', 'addColumns', 'removeColumns', 'addFilters', 'removeFilters'],
+    steps: [
+      {
+        name: 'Fetch current report',
+        method: 'GET',
+        path: (params) => `/api/reports/${params.reportSid}`,
+        buildBody: () => null,
+        extractResult: { reportData: '' }
+      },
+      {
+        name: 'Update report',
+        method: 'PUT',
+        path: (params) => `/api/reports/${params.reportSid}`,
+        buildBody: (params, prevResults) => {
+          const report = prevResults._rawResponse_0 || prevResults.reportData;
+          if (!report) throw new Error('Could not retrieve report data');
+
+          // Merge metadata
+          if (params.name) report.name = params.name;
+          if (params.description !== undefined) report.description = params.description;
+          if (params.categorySid) report.categorySid = params.categorySid;
+          if (params.allowChart !== undefined) report.allowChart = params.allowChart;
+          if (params.hideInMyReports !== undefined) report.hideInMyReports = params.hideInMyReports;
+
+          // Full column replacement
+          if (params.columns) {
+            report.columns = [{
+              column: params.columns.map((col, i) => normalizeReportColumn(col, i, _currentLogEntry))
+            }];
+          }
+
+          // Add columns to existing
+          if (params.addColumns && Array.isArray(params.addColumns)) {
+            const existing = (report.columns && report.columns[0]?.column) || [];
+            const newCols = params.addColumns.map((col, i) =>
+              normalizeReportColumn(col, existing.length + i, _currentLogEntry));
+            if (!report.columns || report.columns.length === 0) {
+              report.columns = [{ column: newCols }];
+            } else {
+              report.columns[0].column = [...existing, ...newCols];
+            }
+          }
+
+          // Remove columns by alias
+          if (params.removeColumns && Array.isArray(params.removeColumns)) {
+            if (report.columns && report.columns[0]?.column) {
+              const removeLower = params.removeColumns.map(c => c.toLowerCase());
+              report.columns[0].column = report.columns[0].column.filter(c =>
+                !removeLower.includes((c['@alias'] || '').toLowerCase())
+              );
+              if (_currentLogEntry) {
+                actionLog.addStepResult(_currentLogEntry, `Removed columns: ${params.removeColumns.join(', ')}`, true);
+              }
+            }
+          }
+
+          // Full filter replacement
+          if (params.filters) {
+            report.filters = [{
+              filter: params.filters.map(f => normalizeReportFilter(f, _currentLogEntry))
+            }];
+          }
+
+          // Add filters
+          if (params.addFilters && Array.isArray(params.addFilters)) {
+            const existing = (report.filters && report.filters[0]?.filter) || [];
+            const newFilters = params.addFilters.map(f => normalizeReportFilter(f, _currentLogEntry));
+            if (!report.filters || report.filters.length === 0) {
+              report.filters = [{ filter: newFilters }];
+            } else {
+              report.filters[0].filter = [...existing, ...newFilters];
+            }
+          }
+
+          // Remove filters by expose label
+          if (params.removeFilters && Array.isArray(params.removeFilters)) {
+            if (report.filters && report.filters[0]?.filter) {
+              const removeLower = params.removeFilters.map(f => f.toLowerCase());
+              report.filters[0].filter = report.filters[0].filter.filter(f =>
+                !removeLower.includes((f.expose || '').toLowerCase())
+              );
+            }
+          }
+
+          // Merge limits
+          if (params.limits) {
+            const normalizedLimits = normalizeReportLimits(params.limits, _currentLogEntry);
+            report.limits = { ...report.limits, ...normalizedLimits };
+          }
+
+          return report;
+        }
+      }
+    ]
+  },
+
+  'delete-report': {
+    id: 'delete-report',
+    label: 'Delete Report',
+    category: 'reports',
+    level: 2,
+    description: 'Delete a report by SID.',
+    requiredParams: ['reportSid'],
+    optionalParams: [],
+    steps: [
+      {
+        name: 'Delete report',
+        method: 'DELETE',
+        path: (params) => `/api/reports/${params.reportSid}`,
+        buildBody: () => null
+      }
+    ]
+  },
+
+  'run-report': {
+    id: 'run-report',
+    label: 'Run Report',
+    category: 'reports',
+    level: 1,
+    description: 'Run a report with optional filter overrides. Returns the report data.',
+    requiredParams: ['reportSid'],
+    optionalParams: ['filters', 'dateFilter'],
+    steps: [
+      {
+        name: 'Run report',
+        method: 'POST',
+        path: (params) => `/api/reports/${params.reportSid}/run`,
+        buildBody: (params) => {
+          const body = [];
+
+          // Date filter
+          if (params.dateFilter) {
+            if (Array.isArray(params.dateFilter)) {
+              // Date range: ["2024-01-01", "2024-12-31"]
+              body.push({ label: 'ExposeDateFilter', value: params.dateFilter });
+            } else {
+              // Number of days: "30" or 30
+              body.push({ label: 'ExposeDateFilter', value: String(params.dateFilter) });
+            }
+          }
+
+          // Exposed filter overrides
+          if (params.filters && Array.isArray(params.filters)) {
+            for (const f of params.filters) {
+              body.push({
+                label: f.label || f.expose || f.name,
+                value: f.value
+              });
+            }
+          }
+
+          return body;
+        }
+      }
+    ]
+  },
+
+  'search-reports': {
+    id: 'search-reports',
+    label: 'Search Reports',
+    category: 'reports',
+    level: 1,
+    description: 'Search for reports by name.',
+    requiredParams: [],
+    optionalParams: ['search'],
+    steps: [
+      {
+        name: 'Search reports',
+        method: 'GET',
+        path: (params) => `/api/reports/search${params.search ? '?search=' + encodeURIComponent(params.search) : ''}`,
+        buildBody: () => null
+      }
+    ]
+  },
+
+  'get-report-categories': {
+    id: 'get-report-categories',
+    label: 'Get Report Categories',
+    category: 'reports',
+    level: 1,
+    description: 'Get the category tree for organizing reports.',
+    requiredParams: [],
+    optionalParams: [],
+    steps: [
+      {
+        name: 'Get categories tree',
+        method: 'GET',
+        path: () => '/api/reports/categories/tree/process',
+        buildBody: () => null
+      }
+    ]
+  },
+
+  'auto-generate-report-columns': {
+    id: 'auto-generate-report-columns',
+    label: 'Auto-Generate Report Columns',
+    category: 'reports',
+    level: 2,
+    description: 'Auto-generate columns for an existing report based on its associated process.',
+    requiredParams: ['reportSid'],
+    optionalParams: [],
+    steps: [
+      {
+        name: 'Auto-generate columns',
+        method: 'POST',
+        path: (params) => `/api/reports/autogeneratecolumns/${params.reportSid}`,
+        buildBody: () => null
+      }
+    ]
+  },
+
+  'export-report': {
+    id: 'export-report',
+    label: 'Export Report Data',
+    category: 'reports',
+    level: 1,
+    description: 'Export report data as CSV or Excel.',
+    requiredParams: ['reportSid', 'exportType'],
+    optionalParams: [],
+    steps: [
+      {
+        name: 'Export report data',
+        method: 'GET',
+        path: (params) => `/api/reports/${params.reportSid}/export/data/${params.exportType}`,
+        buildBody: () => null
+      }
+    ]
+  },
+
+  'get-report-filters': {
+    id: 'get-report-filters',
+    label: 'Get Exposed Report Filters',
+    category: 'reports',
+    level: 1,
+    description: 'Get the exposed filters for a report (to know what filters can be applied when running it).',
+    requiredParams: ['reportSid'],
+    optionalParams: [],
+    steps: [
+      {
+        name: 'Get exposed filters',
+        method: 'GET',
+        path: (params) => `/api/reports/${params.reportSid}/filters`,
+        buildBody: () => null
+      }
+    ]
+  },
+
   'setup-slack-integration': {
     id: 'setup-slack-integration',
     label: 'Set Up Slack Integration',
@@ -3597,8 +4253,15 @@ class ActionEngine {
       this.onStepProgress(i + 1, action.steps.length, step.name);
 
       try {
+        // Skip step if condition function returns false
+        if (step.condition && !step.condition(params, prevResults)) {
+          actionLog.addStepResult(logEntry, step.name + ' (skipped)', true);
+          results.push({ step: step.name, success: true, skipped: true, data: null });
+          continue;
+        }
+
         // Build the path (may be dynamic)
-        let path = typeof step.path === 'function' ? step.path(params) : step.path;
+        let path = typeof step.path === 'function' ? step.path(params, prevResults) : step.path;
 
         // Add query params if builder exists
         if (step.buildQuery) {
@@ -3677,11 +4340,28 @@ class ActionEngine {
     await actionLog.finalize(logEntry, allSuccess ? 'success' : 'failed');
     _currentLogEntry = null;
 
+    // Build a deep link for certain action types when successful
+    let link = null;
+    if (allSuccess && results.length > 0) {
+      const lastResult = results[results.length - 1];
+      const data = lastResult.data;
+      if (action.category === 'reports' && actionId === 'create-report') {
+        // Find the SID from whichever step produced it (core-service returns SID in PascalCase)
+        const reportSid = results.reduce((sid, r) => r.data?.SID || r.data?.sid || sid, null);
+        if (reportSid) {
+          link = { url: `${this.baseUrl}/workflow/admin/reports/${reportSid}`, label: 'Open report' };
+        }
+      } else if (data && action.category === 'forms' && actionId === 'create-form' && data.sid) {
+        link = { url: `${this.baseUrl}/workflow/admin/forms/${data.sid}/builder`, label: 'Open form' };
+      }
+    }
+
     return {
       actionId,
       label: action.label,
       success: allSuccess,
-      results
+      results,
+      link
     };
   }
 
@@ -3807,6 +4487,17 @@ function buildResultHTML(result) {
       </div>
     `;
   });
+
+  // Render deep link if available (e.g., link to new report, form, etc.)
+  if (result.link && result.link.url) {
+    html += `
+      <div class="result-link" style="margin-top: 8px;">
+        <a href="${result.link.url}" target="_blank" rel="noopener" style="color: #3949ab; text-decoration: underline; font-weight: 500;">
+          🔗 ${result.link.label || 'Open'}
+        </a>
+      </div>
+    `;
+  }
 
   html += '</div></div>';
   return html;
