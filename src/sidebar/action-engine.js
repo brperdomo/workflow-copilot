@@ -1478,7 +1478,8 @@ const ACTION_REGISTRY = {
         method: 'PUT',
         path: (params) => `/workflow/napi/tasktypes/power-form/${params.formId}/builder`,
         buildBody: (params, prevResults) => {
-          const formData = prevResults[0].formData;
+          const formData = prevResults._rawResponse_0 || prevResults.formData;
+          if (!formData) throw new Error('Could not retrieve form data');
           const mode = params.mode || 'replace';
           if (mode === 'append') {
             const existing = formData.js || '';
@@ -1513,7 +1514,8 @@ const ACTION_REGISTRY = {
         method: 'PUT',
         path: (params) => `/workflow/napi/tasktypes/power-form/${params.formId}/builder`,
         buildBody: (params, prevResults) => {
-          const formData = prevResults[0].formData;
+          const formData = prevResults._rawResponse_0 || prevResults.formData;
+          if (!formData) throw new Error('Could not retrieve form data');
           const mode = params.mode || 'replace';
           if (mode === 'append') {
             const existing = formData.css || '';
