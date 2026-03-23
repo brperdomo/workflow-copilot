@@ -1651,6 +1651,15 @@ Special types:
 - RESTful Element: request.executeRequest(runId), onResponse handler, Server Variables for token persistence.
 - Button: events.onClick handler. No Answer property. Use for triggering actions (search, add to cart, clear, submit).
 
+**Form Script patterns (IMPORTANT — follow these exactly):**
+- Assign ALL event handlers at the TOP LEVEL of the script. Do NOT wrap in formState checks — the script runs in both preview and runtime.
+- Get element references at the top: \`const btnSearch = intForm.getElementByClientID('btnSearch');\`
+- Assign click handlers directly: \`btnSearch.events.onClick = async () => { ... };\`
+- For RESTful Element execution, generate a shared runId: \`const runId = intForm.generateUniqueID();\`
+- Use async/await with try/catch for REST calls: \`await restElement.request.executeRequest(runId);\`
+- Grid manipulation: \`grid.getRowObject()\` for new row, \`grid.addRow(row)\`, \`grid.refreshGrid()\`, \`grid.gridOptions.data.splice(0, grid.Answer.length)\` to clear
+- Self-executing async IIFE for initialization: \`(async () => { await restElement.request.executeRequest(runId); })();\`
+
 Client ID prefixes (best practice): stxt (ShortText), ltxt (LongText), num (Number), lnk (Link), eml (Email), cal (Calendar), sel (SelectList), chk (Checkboxes), rad (RadioButtons), file (FileAttachment), sig (Signature), cs (ContactSearch), srch (SearchBox), rest (RESTful), grd (Grid), btn (Button)
 
 IMPORTANT: Do NOT mix Form Rules and JavaScript. If using script, handle ALL logic in script.
