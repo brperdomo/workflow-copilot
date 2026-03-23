@@ -1566,11 +1566,14 @@ Example:
 - Number → QuestionType: "Number"
 - RESTful Element → QuestionType: "RESTfulElement" (NOT "RestfulElement" or "RESTful")
 - Grid → QuestionType: "Grid"
+- Button → QuestionType: "Button" (type is "FormTool_Type", NOT "Question_Type" — the engine handles this automatically)
 
 **Field Templates — the engine auto-builds full structures.** You only need to provide:
 - QuestionType, Label, ClientID (with correct prefix), and any type-specific config (Choices for radio/checkbox/select, validation, restRequest for RESTfulElement).
 - The engine fills in all required properties (displayName, show, flex, events, dbSettings, etc.) automatically.
 - For RESTfulElement: provide QuestionType:"RESTfulElement", Label, ClientID (prefix rest_), and optionally a restRequest object for pre-configuration.
+- For Button: provide QuestionType:"Button", Label, ClientID (prefix btn). Buttons use onClick events (not onChange). The engine sets type:"FormTool_Type" automatically.
+- For hidden fields (data buffers): set hidden:true on any field to hide it at runtime. Convention: include "(hidden)" in the Label for builder clarity. Set stopBlurSave:true on fields that change frequently (e.g., pagination cursors).
 
 **RESTful Element restRequest structure** (lives at dbSettings.restRequest):
 The engine normalizes whatever you provide, but here is the target schema:
@@ -1581,7 +1584,16 @@ The engine normalizes whatever you provide, but here is the target schema:
 - auth: {type:"none"|"bearer"|"oauth2", credentialId:"...", grantType:"...", tokenUrl:"...", ...}
 - body: {type:"none"|"form"|"raw", contentType:"application/json", raw:"...", urlEncoded:[{key,value,enabled,source}]} OR plain string (engine wraps as raw) OR plain object {amount:"100"} (engine converts to urlEncoded form)
 - response: {expectedStatus:[], enableTimeout:false, timeoutDuration:30000, retryOnFailure:false, maxRetries:3, responseMode:"standard"}
-- mappings: [], envVars: []
+- mappings: array of response-to-field mappings. Each: {responsePath:"$.results[*]", mapTo:"field", fieldId:"txtTargetField", serverVariableName:"", filename:{}, contentType:{}}. Use JSONPath syntax for responsePath.
+- envVars: array of placeholder substitutions. Each: {key:"__placeholder__", source:"field", fieldId:"txtSourceField", enabled:true}. Placeholders in the request body/URL matching the key are replaced with the field's current value at execution time. Useful for pagination cursors, dynamic parameters, etc.
+- restRequestUISettings: {hideProgressIndicator:true} — optional, hides the loading spinner during execution (useful for background/chained requests)
+
+**Response Mappings pattern** (REST → hidden field → script → Grid):
+When fetching data from external APIs (Notion, Salesforce, etc.), use this pattern:
+1. RESTful Element fetches data, mappings dump response into hidden ShortText fields (data buffers)
+2. Hidden field's onChange handler processes the raw data in form script
+3. Script populates a Grid or Select List with the processed results
+- For paginated APIs: use TWO RESTful Elements — one for initial fetch, one for "get next page" with an envVar placeholder (e.g., __start_cursor__) that resolves from a hidden cursor field. The cursor field's onChange triggers the next-page fetch, creating a self-chaining pagination loop.
 
 **Configuring RESTful Elements:**
 - Use \`update-field\` with fieldIdentifier and updates: { dbSettings: { restRequest: { method, url, headers, body, auth } } }.
@@ -1637,8 +1649,9 @@ Special types:
 - File Attachment: Answer is array of File objects. fileAttachmentData for uploaded files.
 - Contact Search: Answer is array of user objects (Email, ID, Name, SID, Title, UserName).
 - RESTful Element: request.executeRequest(runId), onResponse handler, Server Variables for token persistence.
+- Button: events.onClick handler. No Answer property. Use for triggering actions (search, add to cart, clear, submit).
 
-Client ID prefixes (best practice): stxt (ShortText), ltxt (LongText), num (Number), lnk (Link), eml (Email), cal (Calendar), sel (SelectList), chk (Checkboxes), rad (RadioButtons), file (FileAttachment), sig (Signature), cs (ContactSearch), srch (SearchBox), rest (RESTful), grd (Grid)
+Client ID prefixes (best practice): stxt (ShortText), ltxt (LongText), num (Number), lnk (Link), eml (Email), cal (Calendar), sel (SelectList), chk (Checkboxes), rad (RadioButtons), file (FileAttachment), sig (Signature), cs (ContactSearch), srch (SearchBox), rest (RESTful), grd (Grid), btn (Button)
 
 IMPORTANT: Do NOT mix Form Rules and JavaScript. If using script, handle ALL logic in script.
 

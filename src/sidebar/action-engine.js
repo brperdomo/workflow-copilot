@@ -307,6 +307,50 @@ function normalizeBody(input, _logEntry) {
   return empty;
 }
 
+// Normalizes response mappings from LLM format into the correct structure.
+// Each mapping maps a JSONPath from the API response to a form field or server variable.
+function normalizeResponseMappings(input, _logEntry) {
+  if (!input || !Array.isArray(input)) return [];
+  return input.map(m => {
+    const normalized = {
+      responsePath: m.responsePath || m.path || '',
+      mapTo: m.mapTo || 'field',
+      serverVariableName: m.serverVariableName || '',
+      fieldId: m.fieldId || m.field || '',
+      filename: m.filename || {},
+      contentType: m.contentType || {}
+    };
+    // Log if LLM used shorthand keys
+    if ((m.path || m.field) && _logEntry) {
+      actionLog.addNormalization(_logEntry, 'restRequest.mappings',
+        'shorthand keys (path/field)',
+        'normalized to responsePath/fieldId');
+    }
+    return normalized;
+  });
+}
+
+// Normalizes envVars (environment variable substitutions) for RESTful Elements.
+// envVars allow placeholder replacement in the request body/URL with values from form fields.
+// Format: { key: "__placeholder__", source: "field", fieldId: "txtFieldName", enabled: true }
+function normalizeEnvVars(input, _logEntry) {
+  if (!input || !Array.isArray(input)) return [];
+  return input.map(ev => {
+    const normalized = {
+      key: ev.key || ev.placeholder || '',
+      enabled: ev.enabled !== undefined ? ev.enabled : true,
+      source: ev.source || 'field',
+      fieldId: ev.fieldId || ev.field || ''
+    };
+    if ((ev.placeholder || ev.field) && _logEntry) {
+      actionLog.addNormalization(_logEntry, 'restRequest.envVars',
+        'shorthand keys (placeholder/field)',
+        'normalized to key/fieldId');
+    }
+    return normalized;
+  });
+}
+
 // ── Grid Column Definition Builder ──
 // Takes a simplified column spec from the LLM and produces a complete columnDef object.
 // The LLM provides: { name, displayName, type, width } + type-specific props.
@@ -649,7 +693,9 @@ function buildFieldFromTemplate(field, _logEntry) {
     loaded: true,
     isdirty: false,
     originalAnswer: null,
-    islive: false
+    islive: false,
+    hidden: field.hidden || false,
+    stopBlurSave: field.stopBlurSave || false
   };
 
   // ── Type-specific enrichment ──
@@ -661,6 +707,29 @@ function buildFieldFromTemplate(field, _logEntry) {
     if (providedKeys.length < 5) {
       actionLog.addWarning(_logEntry, `Sparse field definition for ${qt}`, `LLM only provided: ${providedKeys.join(', ')}`);
     }
+  }
+
+  if (qt === 'Button') {
+    // Buttons are FormTool_Type, NOT Question_Type — distinct category in Form Builder
+    base.type = 'FormTool_Type';
+    base.displayName = 'Button';
+    // Remove question-specific properties that buttons don't have
+    delete base.validation;
+    delete base.dbSettings;
+    delete base.gridOptions;
+    delete base.Choices;
+    delete base.Answer;
+    delete base.columnOrRow;
+    delete base.multiple;
+    delete base.formtext;
+    delete base.placeholder;
+    delete base.helpText;
+    delete base.originalAnswer;
+    delete base.flex;
+    // Button-specific properties
+    base.events = field.events || { onClick: null };
+    base.new = true;
+    base.validation = {};
   }
 
   if (qt === 'RESTfulElement') {
@@ -709,9 +778,10 @@ function buildFieldFromTemplate(field, _logEntry) {
           maxRetries: 3,
           responseMode: 'standard'
         }, restReq.response || {}),
-        mappings: restReq.mappings || [],
-        envVars: restReq.envVars || []
-      }
+        mappings: normalizeResponseMappings(restReq.mappings, _logEntry),
+        envVars: normalizeEnvVars(restReq.envVars, _logEntry)
+      },
+      restRequestUISettings: field.restRequestUISettings || (field.dbSettings && field.dbSettings.restRequestUISettings) || {}
     };
   }
 
