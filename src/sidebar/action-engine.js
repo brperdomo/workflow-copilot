@@ -1481,11 +1481,12 @@ const ACTION_REGISTRY = {
           const formData = prevResults._rawResponse_0 || prevResults.formData;
           if (!formData) throw new Error('Could not retrieve form data');
           const mode = params.mode || 'replace';
+          // Form Builder uses "script" property for JS (NOT "js")
           if (mode === 'append') {
-            const existing = formData.js || '';
-            formData.js = existing + (existing ? '\n\n' : '') + params.javascript;
+            const existing = formData.script || '';
+            formData.script = existing + (existing ? '\n\n' : '') + params.javascript;
           } else {
-            formData.js = params.javascript;
+            formData.script = params.javascript;
           }
           return { node: formData };
         }
