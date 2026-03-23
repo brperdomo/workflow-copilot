@@ -726,8 +726,15 @@ function buildFieldFromTemplate(field, _logEntry) {
     delete base.helpText;
     delete base.originalAnswer;
     delete base.flex;
-    // Button-specific properties
-    base.events = field.events || { onClick: null };
+    // Button-specific properties — onClick is ALWAYS null in the field definition.
+    // Click handlers are assigned in the form script, not in the field JSON.
+    if (field.events && field.events.onClick && typeof field.events.onClick === 'string') {
+      if (_logEntry) {
+        actionLog.addWarning(_logEntry, 'Button onClick handler stripped',
+          'Button click handlers must be assigned in form script (update-form-javascript), not in the field JSON. The onClick value has been set to null.');
+      }
+    }
+    base.events = { onClick: null };
     base.new = true;
     base.validation = {};
   }
@@ -1484,6 +1491,23 @@ const ACTION_REGISTRY = {
             const existing = prevResults._rawResponse_0 || prevResults.existingCode || '';
             newScript = existing + (existing ? '\n\n' : '') + params.javascript;
           }
+
+          // ── Script quality checks ──
+          // Warn on formState guards — event handlers should be assigned at top level
+          if (/intForm\.formState\s*===?\s*['"]runtime['"]/.test(newScript)) {
+            if (_currentLogEntry) {
+              actionLog.addWarning(_currentLogEntry, 'Script wraps code in formState check',
+                'Event handlers should be assigned at the top level of the script without formState guards. The script runs in both preview and runtime modes.');
+            }
+          }
+          // Warn if onClick is assigned inside a conditional block (common LLM mistake)
+          if (/if\s*\(.*\)\s*\{[^}]*\.events\.onClick\s*=/.test(newScript)) {
+            if (_currentLogEntry) {
+              actionLog.addWarning(_currentLogEntry, 'onClick assigned inside conditional',
+                'Button click handlers should be assigned at the top level, not inside if blocks. Pattern: const btn = intForm.getElementByClientID("btnX"); btn.events.onClick = async () => { ... };');
+            }
+          }
+
           return {
             sid: params.formId,
             updateThis: { script: newScript }
