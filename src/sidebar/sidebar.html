@@ -68,6 +68,8 @@
         <button id="apiExplorerBtn" class="footer-btn">🔍 API Explorer</button>
         <button id="testApiBtn" class="footer-btn">⚡ Test API</button>
         <button id="actionLogBtn" class="footer-btn">📊 Action Log</button>
+        <button id="chatHistoryBtn" class="footer-btn">💬 History</button>
+        <span id="tokenStats" class="token-stats" title="No requests yet">0 req · 0 tokens</span>
       </div>
     </div>
 
@@ -181,6 +183,20 @@
         <h3>Integration Recipes</h3>
       </div>
       <div id="recipesList" class="recipes-list"></div>
+    </div>
+
+    <!-- Chat History Panel -->
+    <div id="chatHistoryPanel" class="action-log-panel hidden">
+      <div class="log-header">
+        <button id="chatHistoryBack" class="icon-btn">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+        </button>
+        <h3>Chat History</h3>
+        <div class="log-header-actions">
+          <button id="newChatBtn" class="footer-btn" style="font-size:11px;">+ New Chat</button>
+        </div>
+      </div>
+      <div id="chatHistoryList" class="log-entries"></div>
     </div>
 
     <!-- Action Log Panel -->

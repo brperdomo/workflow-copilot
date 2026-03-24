@@ -4616,7 +4616,10 @@ class ActionEngine {
           if (!this.formBackupStacks[params.formId]) {
             this.formBackupStacks[params.formId] = [];
           }
-          this.formBackupStacks[params.formId].push(JSON.parse(JSON.stringify(response.data)));
+          const stack = this.formBackupStacks[params.formId];
+          stack.push(JSON.parse(JSON.stringify(response.data)));
+          // Keep only the last 5 backups (matches Workflow's undo limit)
+          if (stack.length > 5) stack.shift();
           logEntry.backupPushed = true;
         }
 

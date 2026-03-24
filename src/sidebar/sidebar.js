@@ -27,6 +27,136 @@ let settings = {
   baseUrl: ''
 };
 
+// ── Chat Persistence ──
+const chatStore = {
+  _currentId: null,
+  _maxChats: 50, // keep last 50 conversations
+
+  /** Generate a short unique ID */
+  _id() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 6); },
+
+  /** Get all saved chats (sorted newest first) */
+  async list() {
+    const { copilotChats = [] } = await chrome.storage.local.get('copilotChats');
+    return copilotChats.sort((a, b) => b.updatedAt - a.updatedAt);
+  },
+
+  /** Save current chat (call after each message) */
+  async save() {
+    if (chatHistory.length === 0) return;
+
+    const chats = await this.list();
+    const now = Date.now();
+
+    // Build preview from first user message
+    const firstUser = chatHistory.find(m => m.role === 'user');
+    const preview = firstUser ? firstUser.content.substring(0, 80) : 'New chat';
+
+    if (this._currentId) {
+      // Update existing
+      const idx = chats.findIndex(c => c.id === this._currentId);
+      if (idx !== -1) {
+        chats[idx].messages = chatHistory.filter(m => m.role === 'user' || m.role === 'assistant');
+        chats[idx].updatedAt = now;
+        chats[idx].preview = preview;
+        chats[idx].messageCount = chatHistory.filter(m => m.role !== 'system').length;
+        chats[idx].tokens = tokenTracker.session.totalTokens;
+      }
+    } else {
+      // New chat
+      this._currentId = this._id();
+      chats.unshift({
+        id: this._currentId,
+        createdAt: now,
+        updatedAt: now,
+        preview,
+        messageCount: chatHistory.filter(m => m.role !== 'system').length,
+        messages: chatHistory.filter(m => m.role === 'user' || m.role === 'assistant'),
+        tokens: tokenTracker.session.totalTokens
+      });
+    }
+
+    // Trim to max
+    const trimmed = chats.slice(0, this._maxChats);
+    await chrome.storage.local.set({ copilotChats: trimmed });
+  },
+
+  /** Load a specific chat by ID */
+  async load(chatId) {
+    const chats = await this.list();
+    const chat = chats.find(c => c.id === chatId);
+    if (!chat) return null;
+    this._currentId = chat.id;
+    return chat;
+  },
+
+  /** Delete a chat */
+  async delete(chatId) {
+    const chats = await this.list();
+    const filtered = chats.filter(c => c.id !== chatId);
+    await chrome.storage.local.set({ copilotChats: filtered });
+    if (this._currentId === chatId) this._currentId = null;
+  },
+
+  /** Start a fresh chat */
+  startNew() {
+    this._currentId = null;
+    chatHistory = [];
+    tokenTracker.reset();
+  }
+};
+
+// ── Token Usage Tracker ──
+const tokenTracker = {
+  session: { requests: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+  history: [], // per-request log: { timestamp, promptTokens, completionTokens, totalTokens, model }
+
+  record(usage, model) {
+    const entry = {
+      timestamp: new Date().toISOString(),
+      promptTokens: usage.prompt_tokens || usage.input_tokens || 0,
+      completionTokens: usage.completion_tokens || usage.output_tokens || 0,
+      totalTokens: 0,
+      model: model || 'unknown'
+    };
+    entry.totalTokens = entry.promptTokens + entry.completionTokens;
+    this.session.requests++;
+    this.session.promptTokens += entry.promptTokens;
+    this.session.completionTokens += entry.completionTokens;
+    this.session.totalTokens += entry.totalTokens;
+    this.history.push(entry);
+    this._updateUI();
+    return entry;
+  },
+
+  _updateUI() {
+    const el = document.getElementById('tokenStats');
+    if (!el) return;
+    const s = this.session;
+    el.textContent = `${s.requests} req · ${this._fmt(s.totalTokens)} tokens`;
+    el.title = `Prompt: ${this._fmt(s.promptTokens)} · Completion: ${this._fmt(s.completionTokens)} · Total: ${this._fmt(s.totalTokens)} · Requests: ${s.requests}`;
+  },
+
+  _fmt(n) {
+    return n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
+  },
+
+  reset() {
+    this.session = { requests: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+    this.history = [];
+    this._updateUI();
+  },
+
+  getSummary() {
+    const s = this.session;
+    return {
+      ...s,
+      avgTokensPerRequest: s.requests > 0 ? Math.round(s.totalTokens / s.requests) : 0,
+      history: this.history
+    };
+  }
+};
+
 // ── Action Engine Instance ──
 let actionEngine = null;
 
@@ -60,6 +190,16 @@ document.addEventListener('DOMContentLoaded', async () => {
   await loadApiCatalog();
   setupEventListeners();
   requestContext();
+
+  // Resume last chat if available
+  const chats = await chatStore.list();
+  if (chats.length > 0) {
+    const latest = chats[0];
+    // Only auto-resume if it's recent (within 4 hours)
+    if (Date.now() - latest.updatedAt < 4 * 60 * 60 * 1000) {
+      await resumeChat(latest.id);
+    }
+  }
 
   // Re-check context periodically (handles SPA navigation)
   setInterval(requestContext, 5000);
@@ -484,6 +624,11 @@ function addMessage(content, role) {
   container.scrollTop = container.scrollHeight;
 
   chatHistory.push({ role, content });
+
+  // Auto-save after each message (debounced — don't await, fire and forget)
+  if (role === 'user' || role === 'assistant') {
+    chatStore.save();
+  }
 }
 
 // ── Auto-Execute Actions ──
@@ -517,9 +662,16 @@ async function autoExecuteActions(actions, container) {
       if (result.success && actionDef.category === 'forms' && actionDef.steps.some(s => s.method !== 'GET')) {
         await refreshFormBuilder();
 
-        // Add undo button — only the most recent action's undo is visible
+        // Add undo button — only the most recent action's undo is visible (max 5 deep)
+        const MAX_UNDO_DEPTH = 5;
         const formId = action.params.formId;
         if (formId && actionEngine.getBackup(formId)) {
+          // Enforce max undo depth — drop the oldest backup if at limit
+          if (undoButtonStack.length >= MAX_UNDO_DEPTH) {
+            const oldest = undoButtonStack.shift();
+            oldest.remove();
+          }
+
           // Hide the previous undo button if there is one
           if (undoButtonStack.length > 0) {
             const prevBtn = undoButtonStack[undoButtonStack.length - 1];
@@ -528,7 +680,7 @@ async function autoExecuteActions(actions, container) {
 
           const undoBtn = document.createElement('button');
           undoBtn.className = 'action-undo-btn';
-          undoBtn.innerHTML = '↩ Undo this change';
+          undoBtn.innerHTML = `↩ Undo this change (${undoButtonStack.length + 1}/${MAX_UNDO_DEPTH})`;
           undoBtn.addEventListener('click', async () => {
             undoBtn.disabled = true;
             undoBtn.textContent = '⏳ Restoring...';
@@ -1430,6 +1582,23 @@ async function callWorkflowAI(userMessage, context) {
 
   const data = await response.json();
 
+  // ── Track token usage ──
+  // Try to extract usage from response (providers nest it differently)
+  const usage = data.usage                              // Anthropic direct: { input_tokens, output_tokens }
+    || data.data?.usage                                  // Wrapped: { data: { usage: ... } }
+    || data.choices?.[0]?.usage                          // OpenAI variant
+    || null;
+  const model = data.model || data.data?.model || settings.aiProvider || 'unknown';
+  if (usage) {
+    tokenTracker.record(usage, model);
+  } else {
+    // Fallback: estimate tokens (~4 chars per token) when API doesn't return usage
+    const responseText = data.data || data.content || data.text || '';
+    const estPrompt = Math.ceil(fullUserPrompt.length / 4) + Math.ceil(systemPrompt.length / 4);
+    const estCompletion = Math.ceil((typeof responseText === 'string' ? responseText.length : JSON.stringify(responseText).length) / 4);
+    tokenTracker.record({ prompt_tokens: estPrompt, completion_tokens: estCompletion }, model + ' (est.)');
+  }
+
   // Extract the response text - the execute endpoint returns { data: "...", content: "...", ... }
   if (data.data && typeof data.data === 'string') return data.data;
   if (data.content && typeof data.content === 'string') return data.content;
@@ -2136,6 +2305,113 @@ async function showActionLog() {
   renderLogEntries();
 }
 
+// ── Chat History UI ──
+async function showChatHistory() {
+  const panel = $('#chatHistoryPanel');
+  const list = $('#chatHistoryList');
+  panel.classList.remove('hidden');
+
+  const chats = await chatStore.list();
+
+  if (chats.length === 0) {
+    list.innerHTML = `<div class="log-empty"><div class="log-empty-icon">💬</div>No saved chats yet.<br>Start a conversation and it will appear here.</div>`;
+    return;
+  }
+
+  list.innerHTML = chats.map(chat => {
+    const date = new Date(chat.updatedAt);
+    const timeStr = formatChatDate(date);
+    const isCurrent = chat.id === chatStore._currentId;
+    const tokenStr = chat.tokens ? ` · ${tokenTracker._fmt(chat.tokens)} tok` : '';
+
+    return `
+      <div class="chat-history-item${isCurrent ? ' chat-current' : ''}" data-chat-id="${chat.id}">
+        <div class="chat-history-preview">${escapeHtml(chat.preview)}</div>
+        <div class="chat-history-meta">
+          ${timeStr} · ${chat.messageCount || 0} msgs${tokenStr}
+          ${isCurrent ? '<span class="chat-active-badge">active</span>' : ''}
+        </div>
+        <button class="chat-delete-btn" data-chat-id="${chat.id}" title="Delete chat">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4h8v2M5 6v14a2 2 0 002 2h10a2 2 0 002-2V6"/></svg>
+        </button>
+      </div>
+    `;
+  }).join('');
+
+  // Bind click to resume
+  list.querySelectorAll('.chat-history-item').forEach(el => {
+    el.addEventListener('click', async (e) => {
+      if (e.target.closest('.chat-delete-btn')) return; // let delete handler run
+      const chatId = el.dataset.chatId;
+      if (chatId === chatStore._currentId) {
+        panel.classList.add('hidden');
+        return;
+      }
+      await resumeChat(chatId);
+      panel.classList.add('hidden');
+    });
+  });
+
+  // Bind delete buttons
+  list.querySelectorAll('.chat-delete-btn').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const chatId = btn.dataset.chatId;
+      await chatStore.delete(chatId);
+      showChatHistory(); // refresh
+    });
+  });
+}
+
+async function resumeChat(chatId) {
+  const chat = await chatStore.load(chatId);
+  if (!chat) return;
+
+  // Clear current UI
+  chatHistory = [];
+  tokenTracker.reset();
+  const container = $('#chatMessages');
+  container.innerHTML = '';
+
+  // Rebuild messages in the UI
+  for (const msg of chat.messages) {
+    addMessage(msg.content, msg.role);
+  }
+}
+
+function startNewChat() {
+  chatStore.startNew();
+  const container = $('#chatMessages');
+  container.innerHTML = `
+    <div class="welcome-message">
+      <p id="welcomeText">Welcome! I can help you architect and build integrations between Workflow and any external service — Slack, Stripe, ERPs, Oracle, Salesforce, custom APIs, or anything with a REST endpoint.</p>
+      <p id="apiKeyPrompt" style="margin-top: 8px; color: #f59e0b; font-size: 12px;">⚠️ Select your AI API key from the Credential Center in Settings (gear icon) to unlock full capabilities.</p>
+    </div>
+  `;
+  updateApiKeyPrompt();
+  $('#chatHistoryPanel').classList.add('hidden');
+}
+
+function formatChatDate(date) {
+  const now = new Date();
+  const diffMs = now - date;
+  const diffMins = Math.floor(diffMs / 60000);
+  const diffHrs = Math.floor(diffMs / 3600000);
+  const diffDays = Math.floor(diffMs / 86400000);
+
+  if (diffMins < 1) return 'just now';
+  if (diffMins < 60) return `${diffMins}m ago`;
+  if (diffHrs < 24) return `${diffHrs}h ago`;
+  if (diffDays < 7) return `${diffDays}d ago`;
+  return date.toLocaleDateString();
+}
+
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
 function renderLogEntries() {
   const filter = $('#logFilter')?.value || 'all';
   let entries;
@@ -2351,6 +2627,11 @@ function setupEventListeners() {
   $('#testBack').addEventListener('click', () => $('#apiTestPanel').classList.add('hidden'));
   $('#executeTest').addEventListener('click', executeApiTest);
 
+  // Chat History panel
+  $('#chatHistoryBtn').addEventListener('click', showChatHistory);
+  $('#chatHistoryBack').addEventListener('click', () => $('#chatHistoryPanel').classList.add('hidden'));
+  $('#newChatBtn').addEventListener('click', startNewChat);
+
   // Action Log panel
   $('#actionLogBtn').addEventListener('click', showActionLog);
   $('#actionLogBack').addEventListener('click', () => $('#actionLogPanel').classList.add('hidden'));
@@ -2358,5 +2639,34 @@ function setupEventListeners() {
   $('#clearLogBtn').addEventListener('click', async () => {
     await actionLog.clear();
     renderLogEntries();
+  });
+
+  // Token stats — click to show detailed breakdown
+  $('#tokenStats')?.addEventListener('click', () => {
+    const summary = tokenTracker.getSummary();
+    if (summary.requests === 0) {
+      addMessage('No AI requests made yet this session.', 'assistant');
+      return;
+    }
+    const lines = [
+      `**Session Token Usage** (${summary.requests} requests)`,
+      `| Metric | Count |`,
+      `|--------|-------|`,
+      `| Prompt tokens | ${tokenTracker._fmt(summary.promptTokens)} |`,
+      `| Completion tokens | ${tokenTracker._fmt(summary.completionTokens)} |`,
+      `| **Total tokens** | **${tokenTracker._fmt(summary.totalTokens)}** |`,
+      `| Avg per request | ${tokenTracker._fmt(summary.avgTokensPerRequest)} |`,
+      '',
+      '**Per-request breakdown:**'
+    ];
+    summary.history.slice(-10).forEach((h, i) => {
+      const time = new Date(h.timestamp).toLocaleTimeString();
+      const est = h.model.includes('est.') ? ' ≈' : '';
+      lines.push(`${i + 1}. ${time} — ${tokenTracker._fmt(h.totalTokens)} tokens${est} (${h.model})`);
+    });
+    if (summary.history.length > 10) {
+      lines.push(`... and ${summary.history.length - 10} earlier requests`);
+    }
+    addMessage(lines.join('\n'), 'assistant');
   });
 }
