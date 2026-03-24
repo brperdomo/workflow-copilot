@@ -493,6 +493,8 @@ async function autoExecuteActions(actions, container) {
     actionEngine.baseUrl = settings.baseUrl || await getBaseUrl();
   }
 
+  const actionResults = []; // Track results for auto-continuation
+
   for (let i = 0; i < actions.length; i++) {
     const action = actions[i];
     const actionDef = ACTION_REGISTRY[action.actionId];
@@ -555,22 +557,117 @@ async function autoExecuteActions(actions, container) {
         }
       }
 
+      const errorDetail = result.success ? '' : ` Error: ${result.results?.map(r => r.error).filter(Boolean).join('; ')}`;
       chatHistory.push({
         role: 'system',
-        content: `Action "${result.label}" ${result.success ? 'completed successfully' : 'failed'}.`
+        content: `Action "${result.label}" ${result.success ? 'completed successfully' : 'failed'}.${errorDetail}`
       });
+
+      // Add clickable disambiguation buttons when multiple matches found
+      if (!result.success) {
+        const errorStr = result.results?.map(r => r.error).filter(Boolean).join(' ') || '';
+        const disambigMatch = errorStr.match(/Multiple (?:processes|categories) match[^:]*: ((?:"[^"]+"\s*\([^)]+\),?\s*)+)/);
+        if (disambigMatch) {
+          const optionRegex = /"([^"]+)"\s*\(([^)]+)\)/g;
+          let match;
+          const optionsDiv = document.createElement('div');
+          optionsDiv.className = 'disambiguation-options';
+          optionsDiv.style.cssText = 'margin-top: 8px; display: flex; flex-direction: column; gap: 4px;';
+          const label = document.createElement('div');
+          label.style.cssText = 'font-size: 12px; color: #666; margin-bottom: 4px;';
+          label.textContent = 'Select one:';
+          optionsDiv.appendChild(label);
+          while ((match = optionRegex.exec(disambigMatch[1])) !== null) {
+            const optName = match[1];
+            const optSid = match[2];
+            const btn = document.createElement('button');
+            btn.className = 'disambiguation-btn';
+            btn.style.cssText = 'padding: 6px 12px; border: 1px solid #3949ab; border-radius: 4px; background: #f5f5ff; color: #3949ab; cursor: pointer; text-align: left; font-size: 12px;';
+            btn.textContent = optName;
+            btn.addEventListener('mouseenter', () => { btn.style.background = '#3949ab'; btn.style.color = '#fff'; });
+            btn.addEventListener('mouseleave', () => { btn.style.background = '#f5f5ff'; btn.style.color = '#3949ab'; });
+            btn.addEventListener('click', async () => {
+              // Disable all buttons
+              optionsDiv.querySelectorAll('button').forEach(b => { b.disabled = true; b.style.opacity = '0.5'; });
+              btn.style.background = '#3949ab'; btn.style.color = '#fff'; btn.style.opacity = '1';
+              btn.textContent = `⏳ Creating with "${optName}"...`;
+              // Re-run the action with the resolved SID
+              const retryParams = { ...action.params };
+              if (errorStr.includes('processes')) {
+                retryParams.objectSid = optSid;
+                delete retryParams.processName;
+              } else {
+                retryParams.categorySid = optSid;
+                delete retryParams.category;
+              }
+              try {
+                actionEngine.baseUrl = settings.baseUrl || await getBaseUrl();
+                const retryResult = await actionEngine.executeAction(action.actionId, retryParams);
+                btn.textContent = retryResult.success ? `✅ Created with "${optName}"` : `❌ Failed`;
+                // Show result
+                const retryEl = document.createElement('div');
+                retryEl.innerHTML = buildResultHTML(retryResult);
+                statusEl.parentNode.insertBefore(retryEl, statusEl.nextSibling);
+                chatHistory.push({ role: 'system', content: `Action "${retryResult.label}" ${retryResult.success ? 'completed successfully' : 'failed'}.` });
+              } catch (retryErr) {
+                btn.textContent = `❌ ${retryErr.message}`;
+              }
+            });
+            optionsDiv.appendChild(btn);
+          }
+          statusEl.appendChild(optionsDiv);
+        }
+      }
+
+      // Track results for auto-continuation
+      actionResults.push({ actionId: action.actionId, actionDef, result });
     } catch (err) {
       statusEl.innerHTML = buildResultHTML({
         label: actionDef.label,
         success: false,
         results: [{ step: 'Execution', success: false, error: err.message }]
       });
+      chatHistory.push({
+        role: 'system',
+        content: `Action "${actionDef.label}" failed: ${err.message}`
+      });
+      actionResults.push({ actionId: action.actionId, actionDef, result: { success: false, results: [{ error: err.message }] } });
     }
   }
 
   // Scroll to bottom
   const chatContainer = $('#chatMessages');
   if (chatContainer) chatContainer.scrollTop = chatContainer.scrollHeight;
+
+  // Auto-continuation: feed action results back to the LLM when needed
+  const allSucceeded = actionResults.every(ar => ar.result.success);
+  const allReadOnly = actionResults.length > 0 && actionResults.every(ar => {
+    const steps = ar.actionDef.steps || [];
+    return steps.every(s => s.method === 'GET');
+  });
+
+  if (allReadOnly && allSucceeded && actionResults.length > 0) {
+    // Build a summary of lookup results to send back to the LLM
+    const summaryParts = actionResults.map(ar => {
+      const data = ar.result.results?.map(r => r.data?.data || r.data).filter(Boolean);
+      let dataStr = JSON.stringify(data, null, 2);
+      if (dataStr.length > 4000) dataStr = dataStr.substring(0, 4000) + '\n... (truncated)';
+      return `${ar.result.label} results:\n${dataStr}`;
+    });
+    const continuationMsg = `The lookup actions completed. Here are the results:\n\n${summaryParts.join('\n\n')}\n\nNow proceed with the original request using the data above. Emit the remaining action blocks.`;
+
+    // Feed back to LLM automatically
+    chatHistory.push({ role: 'system', content: continuationMsg });
+    showTyping();
+    try {
+      const response = await generateResponse(continuationMsg);
+      hideTyping();
+      addMessage(response, 'assistant');
+    } catch (err) {
+      hideTyping();
+      addMessage(`Auto-continuation failed: ${err.message}`, 'assistant');
+    }
+  }
 }
 
 // ── Refresh Form Builder ──
@@ -1613,7 +1710,7 @@ When fetching data from external APIs (Notion, Salesforce, etc.), use this patte
 - NEVER try to configure a RESTful Element by replacing the entire form layout. Always use \`update-field\`.
 
 **Level 2 — Report Actions:**
-- \`create-report\` — Create a new report. Params: name, categorySid (REQUIRED — use get-report-categories to find available category SIDs), [objectSid] (process SID), [dataType] ('request'|'task'|'custom', default 'request'), [columns], [filters], [limits], [description], [allowChart], [hideInMyReports]. Creates via core-service first, then adds columns/filters/limits if provided.
+- \`create-report\` — Create a new report. Params: name, [category] (human-readable name — engine auto-resolves to SID), [categorySid] (direct SID if known), [processName] (human-readable — engine auto-resolves to objectSid), [objectSid] (direct process SID), [dataType] ('request'|'task'|'custom', default 'request'), [filters], [description], [allowChart], [hideInMyReports]. Do NOT pass columns — the engine auto-generates valid columns from the process. Do NOT call get-report-categories or list-processes first. Just emit create-report directly.
 - \`get-report\` — Fetch a report by SID. Params: reportSid
 - \`update-report\` — Update a report (GET→merge→PUT). Params: reportSid, plus any of: [name], [columns] (full replace), [addColumns], [removeColumns] (by alias), [filters] (full replace), [addFilters], [removeFilters] (by expose label), [limits], [description], [allowChart]
 - \`delete-report\` — Delete a report. Params: reportSid
@@ -1719,10 +1816,11 @@ This is a customer-facing tool. Customers should NOT need JavaScript to maintain
 Only use JavaScript when there is NO built-in alternative (e.g., complex API chaining, multi-step data transformations, dynamic grid row manipulation, RESTful Element orchestration, pagination loops). When JavaScript IS needed, keep it minimal and well-commented.
 
 **RULES:**
-1. ALWAYS explain what the action will do BEFORE the action block.
-2. NEVER include actual secrets/tokens in the action block.
-3. You can include MULTIPLE action blocks in one response for sequential setup.
-4. Actions auto-execute immediately — the user does NOT need to approve.
+1. Give a BRIEF (1-2 sentence) explanation of what the action will do BEFORE the action block. Do NOT describe features, usage scenarios, or capabilities — just say what you're about to do.
+2. NEVER describe the result as successful, complete, or ready BEFORE the action executes. The action may fail.
+3. NEVER include actual secrets/tokens in the action block.
+4. You can include MULTIPLE action blocks in one response for sequential setup.
+5. Actions auto-execute immediately — the user does NOT need to approve.
 5. Use actions when the user asks you to "do", "create", "set up", "configure", "add", "move", "reorganize", etc.
 6. Use advice-only (no action block) when the user asks "how do I", "explain", "what is", etc.
 7. **SECTION IDENTIFICATION — Use LABELS, not ClientIDs!** All section-related params (sectionClientId, targetSectionClientId, sourceSectionClientId) accept EITHER a ClientID OR a section LABEL. The engine resolves labels automatically (case-insensitive). Examples: "Basic Details", "Pets", "Contact Info". This means you do NOT need get-form-json just to find section IDs — use the label directly. You can also use "Section 1", "Section 2" etc. to reference sections by position (1-based). **CRITICAL: If you call get-form-json first, you MUST use the actual labels from the JSON response, not generic names like "Section 1". Read the Label field from each section in the layout array.**

@@ -1859,7 +1859,7 @@ const ACTION_REGISTRY = {
       {
         name: 'Start instance',
         method: 'POST',
-        path: '/api/instances/start',
+        path: '/workflow/api/instances/start',
         buildBody: (params) => ({
           processSid: params.processSid,
           subject: params.subject || '',
@@ -1881,7 +1881,7 @@ const ACTION_REGISTRY = {
       {
         name: 'Get processes',
         method: 'GET',
-        path: '/api/processes',
+        path: '/workflow/napi/processes',
         buildBody: () => null
       }
     ]
@@ -1898,7 +1898,7 @@ const ACTION_REGISTRY = {
       {
         name: 'Get forms',
         method: 'GET',
-        path: '/api/forms',
+        path: '/workflow/api/forms',
         buildBody: () => null
       }
     ]
@@ -1966,7 +1966,7 @@ const ACTION_REGISTRY = {
       {
         name: 'Create process',
         method: 'POST',
-        path: '/api/processes/create',
+        path: '/workflow/api/processes/create',
         buildBody: (params) => ({
           name: params.name,
           description: params.description || '',
@@ -1988,7 +1988,7 @@ const ACTION_REGISTRY = {
       {
         name: 'Add task',
         method: 'POST',
-        path: (params) => `/api/processes/${params.processSid}/tasks`,
+        path: (params) => `/workflow/api/processes/${params.processSid}/tasks`,
         buildBody: (params) => ({
           name: params.name,
           taskType: params.taskType, // 'Form', 'Approval', 'RestClient', 'Email', 'Script', 'Notification', 'WebForm'
@@ -2012,7 +2012,7 @@ const ACTION_REGISTRY = {
       {
         name: 'Create transition rule',
         method: 'POST',
-        path: (params) => `/api/processes/tasks/${params.taskId}/rules`,
+        path: (params) => `/workflow/api/processes/tasks/${params.taskId}/rules`,
         buildBody: (params) => ({
           targetTaskId: params.targetTaskId,
           label: params.label || '',
@@ -2035,7 +2035,7 @@ const ACTION_REGISTRY = {
       {
         name: 'Add recipient',
         method: 'POST',
-        path: (params) => `/api/processes/processTask/${params.taskId}/recipients`,
+        path: (params) => `/workflow/api/processes/processTask/${params.taskId}/recipients`,
         buildBody: (params) => ({
           recipientType: params.recipientType, // 'user', 'group', 'role'
           recipientId: params.recipientId,
@@ -2057,7 +2057,7 @@ const ACTION_REGISTRY = {
       {
         name: 'Create mapping',
         method: 'POST',
-        path: (params) => `/api/processes/processTask/${params.taskId}/mappings`,
+        path: (params) => `/workflow/api/processes/processTask/${params.taskId}/mappings`,
         buildBody: (params) => ({
           sourceField: params.sourceField,
           targetField: params.targetField,
@@ -2113,7 +2113,7 @@ const ACTION_REGISTRY = {
       {
         name: 'Create form',
         method: 'POST',
-        path: '/api/forms/create',
+        path: '/workflow/api/forms/create',
         buildBody: (params) => ({
           name: params.name,
           description: params.description || ''
@@ -2133,7 +2133,7 @@ const ACTION_REGISTRY = {
       {
         name: 'Create form with layout',
         method: 'POST',
-        path: '/api/forms/createWithLayout',
+        path: '/workflow/api/forms/createWithLayout',
         buildBody: (params) => ({
           name: params.name,
           description: params.description || '',
@@ -2172,7 +2172,7 @@ const ACTION_REGISTRY = {
       {
         name: 'Get form metadata',
         method: 'GET',
-        path: (params) => `/api/forms/${params.formId}`,
+        path: (params) => `/workflow/api/forms/${params.formId}`,
         buildBody: () => null
       }
     ]
@@ -3625,12 +3625,203 @@ const ACTION_REGISTRY = {
     label: 'Create Report',
     category: 'reports',
     level: 2,
-    description: 'Create a new report with columns, filters, and limits. categorySid is REQUIRED by the API. The report is first created as a shell, then columns/filters/limits are added if provided.',
-    requiredParams: ['name', 'categorySid'],
-    optionalParams: ['objectSid', 'columns', 'filters', 'limits', 'description', 'objectType', 'dataType', 'allowChart', 'hideInMyReports', 'isQueue'],
+    description: 'Create a new report with columns, filters, and limits. Accepts category by name or SID and process by name or SID — the engine auto-resolves names to SIDs.',
+    requiredParams: ['name'],
+    optionalParams: ['category', 'categorySid', 'processName', 'objectSid', 'columns', 'filters', 'limits', 'description', 'objectType', 'dataType', 'allowChart', 'hideInMyReports', 'isQueue'],
+    // preResolve runs before steps — resolves human-readable names to SIDs via API lookups
+    preResolve: async function(params, engine) {
+      // Resolve categorySid from category name if not provided directly
+      if (!params.categorySid && params.category) {
+        try {
+          const catResp = await engine._executeApiCall({
+            method: 'GET',
+            url: `${engine.baseUrl}/api/reports/categories/tree/process`,
+            headers: { 'Content-Type': 'application/json' }
+          });
+          const categories = catResp.data || [];
+          const catName = params.category.toLowerCase();
+          const match = categories.find(c =>
+            c.Name && c.Name.toLowerCase() === catName
+          ) || categories.find(c =>
+            c.Name && c.Name.toLowerCase().includes(catName)
+          ) || categories.find(c =>
+            c.Name && catName.includes(c.Name.toLowerCase()) && c.Name.length > 2
+          );
+          if (match) {
+            params.categorySid = match.id;
+          } else {
+            throw new Error(`Category "${params.category}" not found. Available: ${categories.map(c => c.Name).join(', ')}`);
+          }
+        } catch (err) {
+          if (err.message.includes('not found')) throw err;
+          throw new Error(`Failed to resolve category: ${err.message}`);
+        }
+      }
+      // If still no categorySid, use the first available category
+      if (!params.categorySid) {
+        try {
+          const catResp = await engine._executeApiCall({
+            method: 'GET',
+            url: `${engine.baseUrl}/api/reports/categories/tree/process`,
+            headers: { 'Content-Type': 'application/json' }
+          });
+          const categories = catResp.data || [];
+          if (categories.length > 0) {
+            params.categorySid = categories[0].id;
+          } else {
+            throw new Error('No report categories found. Create a category first.');
+          }
+        } catch (err) {
+          if (err.message.includes('No report categories')) throw err;
+          throw new Error(`Failed to fetch categories: ${err.message}`);
+        }
+      }
+      // Resolve objectSid from processName if not provided directly
+      if (!params.objectSid && params.processName) {
+        try {
+          const procResp = await engine._executeApiCall({
+            method: 'GET',
+            url: `${engine.baseUrl}/workflow/napi/processes`,
+            headers: { 'Content-Type': 'application/json' }
+          });
+          // Response is {Items: [...], TotalItemCnt: N}
+          const processes = procResp.data?.Items || procResp.data || [];
+          const procName = params.processName.toLowerCase().trim();
+          const procWords = procName.split(/\s+/);
+
+          // Score each process by match quality
+          const scored = processes
+            .filter(p => p.Name || p.name)
+            .map(p => {
+              const pName = (p.Name || p.name).toLowerCase().trim();
+              let score = 0;
+              if (pName === procName) score = 100; // exact match
+              else if (pName.includes(procName)) score = 90; // process name contains full search term
+              else if (procName.includes(pName) && pName.length >= 4) {
+                // Search contains full process name — score proportional to coverage
+                // "Graysmith Industries Capex - Demo Ready" matching "Capex" scores ~12
+                // but matching "Graysmith Industries Capex - Demo Ready" scores 80
+                score = 70 + Math.round((pName.length / procName.length) * 10);
+              } else {
+                // Word overlap score — count how many search words appear in process name
+                const matchedWords = procWords.filter(w => w.length > 2 && pName.includes(w));
+                score = matchedWords.length > 0 ? (matchedWords.length / procWords.length) * 70 : 0;
+              }
+              return { process: p, name: p.Name || p.name, score };
+            })
+            .filter(s => s.score > 0)
+            .sort((a, b) => b.score - a.score);
+
+          if (scored.length === 0) {
+            throw new Error(`Process "${params.processName}" not found. No similar processes found.`);
+          } else if (scored[0].score >= 80) {
+            // Strong match — use it (if tied at top, ask user)
+            const topScore = scored[0].score;
+            const topMatches = scored.filter(s => s.score === topScore);
+            if (topMatches.length === 1) {
+              params.objectSid = topMatches[0].process.SID || topMatches[0].process.sid || topMatches[0].process.id;
+            } else {
+              // Deduplicate by name (case-insensitive) — keep first occurrence
+              const seen = new Set();
+              const unique = topMatches.filter(s => {
+                const key = s.name.toLowerCase().trim();
+                if (seen.has(key)) return false;
+                seen.add(key);
+                return true;
+              });
+              if (unique.length === 1) {
+                params.objectSid = unique[0].process.SID || unique[0].process.sid || unique[0].process.id;
+              } else {
+                const options = unique.slice(0, 10).map(s => {
+                  const sid = s.process.SID || s.process.sid || s.process.id;
+                  return `"${s.name}" (${sid})`;
+                }).join(', ');
+                throw new Error(`Multiple processes match "${params.processName}": ${options}. Please specify the exact process name or provide objectSid directly.`);
+              }
+            }
+          } else {
+            // Weak matches only — show suggestions
+            const suggestions = scored.slice(0, 5).map(s => `"${s.name}"`).join(', ');
+            throw new Error(`Process "${params.processName}" not found. Did you mean: ${suggestions}?`);
+          }
+        } catch (err) {
+          if (err.message.includes('not found')) throw err;
+          throw new Error(`Failed to resolve process: ${err.message}`);
+        }
+      }
+
+      // ── Fetch available columns for the process ──
+      // If user didn't specify columns, discover what's available and use real mappings
+      if (params.objectSid && !params.columns) {
+        try {
+          const colResp = await engine._executeApiCall({
+            method: 'GET',
+            url: `${engine.baseUrl}/api/reports/columns/available/${params.objectSid}`,
+            headers: { 'Content-Type': 'application/json' }
+          });
+          const available = colResp.data || [];
+          if (available.length > 0) {
+            // Store discovered columns so the step can use them
+            // Pick sensible defaults: ID, Subject/Name, Status, Requester, dates
+            const priorities = [
+              { pattern: /Request\|ID$/i, alias: 'ID', width: '65', sort: 'Desc' },
+              { pattern: /Request\|Subject$/i, alias: 'Subject', width: '250' },
+              { pattern: /Request\|LastMilestone$/i, alias: 'Status', width: '200' },
+              { pattern: /Requester\|Name$/i, alias: 'Requester', width: '150' },
+              { pattern: /Requester\|Department$/i, alias: 'Department', width: '150' },
+              { pattern: /Request\|StartDate$/i, alias: 'Date Entered', width: '120', format: 'Date' },
+              { pattern: /Request\|EndDate$/i, alias: 'Date Completed', width: '120', format: 'Date' },
+              { pattern: /Task\|Name$/i, alias: 'Task Name', width: '200' },
+              { pattern: /Task\|AssignedTo$/i, alias: 'Assigned To', width: '150' },
+              { pattern: /Task\|Status$/i, alias: 'Task Status', width: '120' },
+            ];
+
+            // Flatten available columns into a lookup
+            const allCols = [];
+            for (const group of available) {
+              if (group.columns && Array.isArray(group.columns)) {
+                for (const col of group.columns) {
+                  allCols.push(col);
+                }
+              } else if (group.mapping_val) {
+                allCols.push(group);
+              }
+            }
+
+            // Select defaults from available columns
+            const selected = [];
+            for (const prio of priorities) {
+              const match = allCols.find(c =>
+                prio.pattern.test(c.mapping_val || c.value || '')
+              );
+              if (match) {
+                selected.push({
+                  mapping_val: match.mapping_val || match.value,
+                  mapping_text: match.mapping_text || match.text || match.label || '',
+                  alias: prio.alias,
+                  width: prio.width || '150',
+                  sort: prio.sort || '',
+                  format: prio.format || ''
+                });
+              }
+            }
+
+            if (selected.length > 0) {
+              params.columns = selected;
+              params._discoveredColumns = allCols; // Store for reference
+            }
+          }
+        } catch (err) {
+          // Non-fatal — fall back to built-in defaults
+          console.warn('[Copilot] Could not fetch available columns:', err.message);
+        }
+      }
+
+      return params;
+    },
     steps: [
       {
-        name: 'Create report',
+        name: 'Create report shell',
         method: 'POST',
         path: () => '/core-service/reports/save/script/',
         buildBody: (params) => {
@@ -3651,24 +3842,147 @@ const ACTION_REGISTRY = {
         extractResult: { createdReport: '' }
       },
       {
-        name: 'Add columns, filters, and limits',
-        // Only run this step if columns, filters, or limits were provided
-        condition: (params) => !!(params.columns || params.filters || params.limits),
-        method: 'PUT',
+        name: 'Fetch report document',
+        // GET the newly created report from MongoDB to get the full server-generated
+        // document. We modify it in-place and PUT it back.
+        method: 'GET',
         path: (params, prevResults) => {
           const created = prevResults?.createdReport || prevResults?._rawResponse_0;
           const sid = created?.SID || created?.sid;
           if (!sid) throw new Error('Could not get SID from created report');
           return `/api/reports/${sid}`;
         },
-        buildBody: (params, prevResults) => {
-          const created = prevResults._rawResponse_0 || prevResults.createdReport;
+        buildBody: () => null,
+        extractResult: { reportDoc: '' }
+      },
+      {
+        name: 'Set columns, limits, and filters',
+        // Modify the full server document in-place, then PUT it back.
+        method: 'PUT',
+        path: (params, prevResults) => {
+          const created = prevResults?.createdReport || prevResults?._rawResponse_0;
           const sid = created?.SID || created?.sid;
-          // Build the update body with normalized columns/filters/limits
-          const body = buildReportJSON(params, _currentLogEntry);
-          // Ensure the SID is carried over
-          body.sid = sid;
-          return body;
+          return `/api/reports/${sid}`;
+        },
+        buildBody: (params, prevResults) => {
+          // Start from the full server document (step 2 GET response = _rawResponse_1)
+          const report = prevResults._rawResponse_1 || prevResults.reportDoc;
+          if (!report) throw new Error('Could not retrieve report document');
+
+          // Built-in column mappings that are always valid for any process
+          const BUILTIN_COLUMNS = {
+            // Request fields
+            'request id':       { mapping_val: 'Request|ID', mapping_text: 'Request - ID', width: '80' },
+            'id':               { mapping_val: 'Request|ID', mapping_text: 'Request - ID', width: '80' },
+            'subject':          { mapping_val: 'Request|Subject', mapping_text: 'Request - Subject', width: '250' },
+            'status':           { mapping_val: 'Request|LastMilestone', mapping_text: 'Request - Last Milestone', width: '140' },
+            'last milestone':   { mapping_val: 'Request|LastMilestone', mapping_text: 'Request - Last Milestone', width: '140' },
+            'start date':       { mapping_val: 'Request|StartDate', mapping_text: 'Request - Start Date', width: '120', format: 'Date' },
+            'date entered':     { mapping_val: 'Request|StartDate', mapping_text: 'Request - Start Date', width: '120', format: 'Date' },
+            'created date':     { mapping_val: 'Request|StartDate', mapping_text: 'Request - Start Date', width: '120', format: 'Date' },
+            'end date':         { mapping_val: 'Request|EndDate', mapping_text: 'Request - End Date', width: '120', format: 'Date' },
+            'completed date':   { mapping_val: 'Request|EndDate', mapping_text: 'Request - End Date', width: '120', format: 'Date' },
+            'priority':         { mapping_val: 'Request|Priority', mapping_text: 'Request - Priority', width: '100' },
+            'category':         { mapping_val: 'Request|CategoryPath', mapping_text: 'Request - Category Path', width: '200' },
+            'process':          { mapping_val: 'Request|ProcessName', mapping_text: 'Request - Process Name', width: '200' },
+            'process name':     { mapping_val: 'Request|ProcessName', mapping_text: 'Request - Process Name', width: '200' },
+            // Requester fields
+            'requester':        { mapping_val: 'Requester|Name', mapping_text: 'Requester - Name', width: '150' },
+            'requester name':   { mapping_val: 'Requester|Name', mapping_text: 'Requester - Name', width: '150' },
+            'department':       { mapping_val: 'Requester|Department', mapping_text: 'Requester - Department', width: '150' },
+            'email':            { mapping_val: 'Requester|Email', mapping_text: 'Requester - Email', width: '200' },
+            'requester email':  { mapping_val: 'Requester|Email', mapping_text: 'Requester - Email', width: '200' },
+            // Task fields (for task reports)
+            'task name':        { mapping_val: 'Task|Name', mapping_text: 'Task - Name', width: '200' },
+            'assigned to':      { mapping_val: 'Task|AssignedTo', mapping_text: 'Task - Assigned To', width: '150' },
+            'task status':      { mapping_val: 'Task|Status', mapping_text: 'Task - Status', width: '120' },
+            'due date':         { mapping_val: 'Task|DueDate', mapping_text: 'Task - Due Date', width: '120', format: 'Date' },
+            'task start date':  { mapping_val: 'Task|StartDate', mapping_text: 'Task - Start Date', width: '120', format: 'Date' },
+            'task end date':    { mapping_val: 'Task|EndDate', mapping_text: 'Task - End Date', width: '120', format: 'Date' },
+          };
+
+          // Default columns if none specified
+          const DEFAULT_REQUEST_COLUMNS = ['request id', 'subject', 'status', 'requester', 'department', 'start date'];
+          const DEFAULT_TASK_COLUMNS = ['request id', 'task name', 'assigned to', 'task status', 'due date', 'department'];
+
+          const dataType = (params.dataType || 'request').toLowerCase();
+          let columns;
+          if (params.columns && Array.isArray(params.columns)) {
+            // Process each column — could be a string name or a full object with mapping_val
+            columns = params.columns.map((c, i) => {
+              if (typeof c === 'string') {
+                // Simple name — look up in built-in dictionary
+                const builtin = BUILTIN_COLUMNS[c.toLowerCase().trim()];
+                if (builtin) {
+                  return {
+                    '@alias': c, '@width': builtin.width, '@sortable': 'Yes',
+                    '@sort': '', '@format': builtin.format || '', '@aggregate': '', '@chartoption': '',
+                    index: i, isSelected: false, mapping_val: builtin.mapping_val, mapping_text: builtin.mapping_text
+                  };
+                }
+                if (_currentLogEntry) actionLog.addWarning(_currentLogEntry, `Column "${c}" not in built-in mappings — skipped.`);
+                return null;
+              }
+              // Object — check if it has a mapping_val (LLM provided full column spec)
+              if (c.mapping_val) {
+                return {
+                  '@alias': c.alias || c['@alias'] || c.name || c.label || c.mapping_text || '',
+                  '@width': c.width || c['@width'] || '150',
+                  '@sortable': c.sortable || c['@sortable'] || 'Yes',
+                  '@sort': c.sort || c['@sort'] || '',
+                  '@format': c.format || c['@format'] || '',
+                  '@aggregate': c.aggregate || c['@aggregate'] || '',
+                  '@chartoption': c.chartoption || c['@chartoption'] || '',
+                  index: i, isSelected: false,
+                  mapping_val: c.mapping_val, mapping_text: c.mapping_text || c.mapping_val
+                };
+              }
+              // Object with just a name/label — look up in built-in dictionary
+              const name = c.alias || c.name || c.label || '';
+              const builtin = BUILTIN_COLUMNS[name.toLowerCase().trim()];
+              if (builtin) {
+                return {
+                  '@alias': name, '@width': c.width || builtin.width, '@sortable': 'Yes',
+                  '@sort': c.sort || '', '@format': c.format || builtin.format || '', '@aggregate': '', '@chartoption': '',
+                  index: i, isSelected: false, mapping_val: builtin.mapping_val, mapping_text: builtin.mapping_text
+                };
+              }
+              if (_currentLogEntry) actionLog.addWarning(_currentLogEntry, `Column "${name}" not in built-in mappings and no mapping_val provided — skipped.`);
+              return null;
+            }).filter(Boolean);
+          } else {
+            // Default columns
+            const defaultNames = dataType === 'task' ? DEFAULT_TASK_COLUMNS : DEFAULT_REQUEST_COLUMNS;
+            columns = defaultNames.map((name, i) => {
+              const builtin = BUILTIN_COLUMNS[name];
+              return {
+                '@alias': name, '@width': builtin.width, '@sortable': 'Yes',
+                '@sort': i === 0 ? 'Desc' : '', '@format': builtin.format || '', '@aggregate': '', '@chartoption': '',
+                index: i, isSelected: false, mapping_val: builtin.mapping_val, mapping_text: builtin.mapping_text
+              };
+            });
+          }
+
+          // Modify the full server document in-place
+          if (columns.length > 0) {
+            report.columns = [{ column: columns }];
+          }
+          report.limits = normalizeReportLimits(params.limits, _currentLogEntry);
+          if (params.filters && Array.isArray(params.filters)) {
+            report.filters = [{
+              filter: params.filters.map(f => normalizeReportFilter(f, _currentLogEntry))
+            }];
+          }
+
+          console.log('[Copilot] create-report PUT body:', JSON.stringify({
+            columns: report.columns,
+            filters: report.filters,
+            limits: report.limits,
+            objectSid: report.objectSid,
+            categorySid: report.categorySid
+          }, null, 2));
+
+          return report;
         }
       }
     ]
@@ -4245,6 +4559,18 @@ class ActionEngine {
       this._pendingFormIdSource = null;
     }
 
+    // Run preResolve if defined — resolves human-readable names to SIDs via API lookups
+    if (action.preResolve) {
+      try {
+        params = await action.preResolve(params, this);
+        actionLog.addNormalization(logEntry, 'preResolve', 'Resolved names to SIDs', params);
+      } catch (err) {
+        actionLog.addError(logEntry, 'preResolve failed', err.message);
+        await actionLog.finalize(logEntry, 'failed');
+        return { actionId, label: action.label, success: false, results: [{ step: 'preResolve', success: false, error: err.message }] };
+      }
+    }
+
     const results = [];
     const prevResults = {};
 
@@ -4347,12 +4673,14 @@ class ActionEngine {
       const data = lastResult.data;
       if (action.category === 'reports' && actionId === 'create-report') {
         // Find the SID from whichever step produced it (core-service returns SID in PascalCase)
-        const reportSid = results.reduce((sid, r) => r.data?.SID || r.data?.sid || sid, null);
+        // r.data is the response wrapper {status, statusText, headers, data} — the actual payload is r.data.data
+        const reportSid = results.reduce((sid, r) => r.data?.data?.SID || r.data?.data?.sid || r.data?.SID || r.data?.sid || sid, null);
         if (reportSid) {
           link = { url: `${this.baseUrl}/workflow/admin/reports/${reportSid}`, label: 'Open report' };
         }
-      } else if (data && action.category === 'forms' && actionId === 'create-form' && data.sid) {
-        link = { url: `${this.baseUrl}/workflow/admin/forms/${data.sid}/builder`, label: 'Open form' };
+      } else if (data && action.category === 'forms' && actionId === 'create-form' && (data.data?.sid || data.sid)) {
+        const formSid = data.data?.sid || data.sid;
+        link = { url: `${this.baseUrl}/workflow/admin/forms/${formSid}/builder`, label: 'Open form' };
       }
     }
 

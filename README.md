@@ -52,12 +52,63 @@ workflow-copilot/
 
 ## Setup
 
-1. Clone the repo
-2. Open `chrome://extensions/` and enable Developer Mode
-3. Click **Load unpacked** and select the `workflow-copilot/` directory
-4. Navigate to any Workflow admin page (`*.on-nutrient.io/workflow/admin/*`)
-5. Click the extension icon to open the sidebar
-6. In Settings, connect your Anthropic or OpenAI API key via Workflow's Credential Center
+### Prerequisites
+- **Google Chrome** (or any Chromium-based browser — Edge, Brave, Arc, etc.)
+- **Nutrient Workflow** admin access on `*.on-nutrient.io`
+- An **Anthropic** or **OpenAI** API key stored in Workflow's Credential Center
+
+### Install from Source
+
+1. **Clone the repo**
+   ```bash
+   git clone https://github.com/nicepspdfkit/workflow-copilot.git
+   ```
+
+2. **Open Chrome's extension manager**
+   - Navigate to `chrome://extensions/`
+   - Toggle **Developer mode** ON (top-right corner)
+
+3. **Load the extension**
+   - Click **Load unpacked**
+   - Select the `workflow-copilot/` directory (the folder containing `manifest.json`)
+   - The extension should appear in your extensions list with the Nutrient icon
+
+4. **Pin the extension** (optional but recommended)
+   - Click the puzzle piece icon in Chrome's toolbar
+   - Find **Workflow Copilot** and click the pin icon
+
+### Connect Your AI Provider
+
+5. **Navigate to any Workflow admin page**
+   - Go to `https://<your-tenant>.on-nutrient.io/workflow/admin/`
+
+6. **Open the sidebar**
+   - Click the Workflow Copilot icon in Chrome's toolbar
+   - The sidebar panel opens on the right side of the page
+
+7. **Configure AI credentials**
+   - Click the **⚙ Settings** gear icon at the top of the sidebar
+   - Select your AI provider (Anthropic Claude or OpenAI GPT-4)
+   - Choose the Workflow credential that contains your API key
+   - If you don't have one yet, create a credential in **Admin → Credential Center** with your API key
+
+### Updating
+
+When pulling new changes from the repo:
+1. `git pull` in the `workflow-copilot/` directory
+2. Go to `chrome://extensions/`
+3. Click the **refresh icon** (↻) on the Workflow Copilot card
+4. Reload any open Workflow admin tabs
+
+### Troubleshooting
+
+| Issue | Fix |
+|-------|-----|
+| Sidebar won't open | Check that the extension is enabled in `chrome://extensions/` |
+| "Service Worker (inactive)" | Click the refresh icon on the extension card, then reload the Workflow page |
+| Content script errors | Reload the Workflow admin page (`Cmd+R` / `Ctrl+R`) |
+| API calls fail with CORS | Make sure you're on a `*.on-nutrient.io` domain — the extension only has permissions for Nutrient hosts |
+| Enter key creates new line | Close and reopen the sidebar panel |
 
 ## Action Registry
 
