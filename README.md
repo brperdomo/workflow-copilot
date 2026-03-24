@@ -61,7 +61,7 @@ workflow-copilot/
 
 1. **Clone the repo**
    ```bash
-   git clone https://github.com/nicepspdfkit/workflow-copilot.git
+   git clone https://github.com/brperdomo/workflow-copilot.git
    ```
 
 2. **Open Chrome's extension manager**
