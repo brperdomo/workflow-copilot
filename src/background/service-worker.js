@@ -1,8 +1,54 @@
 // Workflow Copilot - Background Service Worker
 
+// Only enable the side panel on Workflow pages
+const WORKFLOW_URL_PATTERNS = [
+  'https://*.on-nutrient.io/*',
+  'https://*.integrify.com/*'
+];
+
+// Set side panel to only be available on matching URLs
+chrome.sidePanel.setOptions({
+  enabled: false // disabled globally by default
+});
+
+// Enable/disable panel based on tab URL
+function updatePanelForTab(tabId, url) {
+  const isWorkflow = url && WORKFLOW_URL_PATTERNS.some(pattern => {
+    const regex = new RegExp('^' + pattern.replace(/\*/g, '.*') + '$');
+    return regex.test(url);
+  });
+
+  chrome.sidePanel.setOptions({
+    tabId,
+    enabled: isWorkflow,
+    path: isWorkflow ? 'src/sidebar/sidebar.html' : undefined
+  });
+}
+
+// Check on tab update (navigation, URL change)
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.url || changeInfo.status === 'complete') {
+    updatePanelForTab(tabId, tab.url);
+  }
+});
+
+// Check when switching tabs
+chrome.tabs.onActivated.addListener(async ({ tabId }) => {
+  const tab = await chrome.tabs.get(tabId);
+  updatePanelForTab(tabId, tab.url);
+});
+
 // Open side panel when extension icon is clicked
 chrome.action.onClicked.addListener(async (tab) => {
-  await chrome.sidePanel.open({ tabId: tab.id });
+  const isWorkflow = tab.url && WORKFLOW_URL_PATTERNS.some(pattern => {
+    const regex = new RegExp('^' + pattern.replace(/\*/g, '.*') + '$');
+    return regex.test(tab.url);
+  });
+
+  if (isWorkflow) {
+    await chrome.sidePanel.open({ tabId: tab.id });
+  }
+  // On non-Workflow tabs, clicking the icon does nothing (panel is disabled)
 });
 
 // Listen for messages from content script and sidebar

@@ -23,15 +23,21 @@
       </div>
       <!-- Context Bar -->
       <div id="contextBar" class="context-bar">
-        <span id="contextIcon" class="context-icon">📍</span>
+        <span id="contextIcon" class="context-icon"></span>
         <span id="contextText">Detecting page...</span>
       </div>
     </header>
 
-    <!-- Quick Actions -->
-    <div id="quickActions" class="quick-actions">
-      <h3>Quick Start</h3>
-      <div id="suggestionChips" class="suggestion-chips"></div>
+    <!-- Quick Start Dropdown -->
+    <div id="quickActions" class="quick-start-bar">
+      <div class="quick-start-select-wrapper">
+        <select id="quickStartSelect" class="quick-start-select">
+          <option value="" disabled selected>Quick Start — pick a suggestion...</option>
+        </select>
+      </div>
+      <button id="refreshSuggestions" class="icon-btn" title="Refresh suggestions">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>
+      </button>
     </div>
 
     <!-- Chat Messages -->
@@ -56,7 +62,7 @@
     <!-- Input Area -->
     <div id="inputArea" class="input-area">
       <div class="input-wrapper">
-        <textarea id="userInput" placeholder="Ask about APIs, integrations, or RESTful form elements..." rows="1"></textarea>
+        <textarea id="userInput" placeholder="Ask about APIs, integrations, or RESTful form elements..." rows="3"></textarea>
         <button id="sendBtn" class="send-btn" title="Send">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>
@@ -64,12 +70,62 @@
         </button>
       </div>
       <div class="input-footer">
-        <button id="recipesBtn" class="footer-btn">📋 Recipes</button>
-        <button id="apiExplorerBtn" class="footer-btn">🔍 API Explorer</button>
-        <button id="testApiBtn" class="footer-btn">⚡ Test API</button>
-        <button id="actionLogBtn" class="footer-btn">📊 Action Log</button>
-        <button id="chatHistoryBtn" class="footer-btn">💬 History</button>
-        <span id="tokenStats" class="token-stats" title="No requests yet">0 req · 0 tokens</span>
+        <span id="tokenStats" class="token-stats" title="Click for usage details">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+          <span id="tokenStatsText">0 req · 0 tokens</span>
+        </span>
+        <div class="tools-dropdown-wrapper">
+          <button id="toolsDropdownBtn" class="tools-dropdown-btn" title="Tools & Panels">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+            <span>Tools</span>
+            <svg class="tools-chevron" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+          </button>
+          <div id="toolsDropdownMenu" class="tools-dropdown-menu hidden">
+            <button id="recipesBtn" class="tools-menu-item">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+              <div class="tools-menu-text">
+                <span class="tools-menu-label">Recipes</span>
+                <span class="tools-menu-hint">Integration templates</span>
+              </div>
+            </button>
+            <button id="apiExplorerBtn" class="tools-menu-item">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+              <div class="tools-menu-text">
+                <span class="tools-menu-label">API Explorer</span>
+                <span class="tools-menu-hint">Browse endpoints</span>
+              </div>
+            </button>
+            <button id="testApiBtn" class="tools-menu-item">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+              <div class="tools-menu-text">
+                <span class="tools-menu-label">API Tester</span>
+                <span class="tools-menu-hint">Execute requests</span>
+              </div>
+            </button>
+            <div class="tools-menu-divider"></div>
+            <button id="actionLogBtn" class="tools-menu-item">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="9" x2="15" y2="9"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="12" y2="17"/></svg>
+              <div class="tools-menu-text">
+                <span class="tools-menu-label">Action Log</span>
+                <span class="tools-menu-hint">Engine actions</span>
+              </div>
+            </button>
+            <button id="chatHistoryBtn" class="tools-menu-item">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+              <div class="tools-menu-text">
+                <span class="tools-menu-label">Chat History</span>
+                <span class="tools-menu-hint">Past conversations</span>
+              </div>
+            </button>
+            <button id="usageHistoryBtn" class="tools-menu-item">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+              <div class="tools-menu-text">
+                <span class="tools-menu-label">Usage</span>
+                <span class="tools-menu-hint">Token & request stats</span>
+              </div>
+            </button>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -197,6 +253,23 @@
         </div>
       </div>
       <div id="chatHistoryList" class="log-entries"></div>
+    </div>
+
+    <!-- Usage History Panel -->
+    <div id="usageHistoryPanel" class="action-log-panel hidden">
+      <div class="log-header">
+        <button id="usageHistoryBack" class="icon-btn">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+        </button>
+        <h3>Usage History</h3>
+        <div class="log-header-actions">
+          <button id="clearUsageBtn" class="icon-btn" title="Clear history">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4h8v2M5 6v14a2 2 0 002 2h10a2 2 0 002-2V6"/></svg>
+          </button>
+        </div>
+      </div>
+      <div id="usageSummary" class="usage-summary"></div>
+      <div id="usageEntries" class="log-entries"></div>
     </div>
 
     <!-- Action Log Panel -->

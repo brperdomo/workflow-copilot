@@ -12,7 +12,7 @@
   ],
   "host_permissions": [
     "https://*.on-nutrient.io/*",
-    "https://*.nutrient.io/*"
+    "https://*.integrify.com/*"
   ],
   "background": {
     "service_worker": "src/background/service-worker.js"
@@ -23,8 +23,8 @@
   "content_scripts": [
     {
       "matches": [
-        "https://*.on-nutrient.io/workflow/admin/*",
-        "https://*.on-nutrient.io/workflow/*"
+        "https://*.on-nutrient.io/*",
+        "https://*.integrify.com/*"
       ],
       "js": ["src/content/context-detector.js"],
       "css": ["styles/content.css"],

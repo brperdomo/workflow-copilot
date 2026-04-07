@@ -3,6 +3,7 @@ import { API_SERVICES, RECIPES, CONTEXT_SUGGESTIONS, RESTFUL_ELEMENT_GUIDE } fro
 import { EXTERNAL_SERVICES, INTENT_MAPPING } from '../knowledge/external-integrations.js';
 import { FORM_SCRIPTING } from '../knowledge/form-scripting.js';
 import { HELP_CENTER } from '../knowledge/help-center.js';
+import { resolveSkills, buildSkillPrompt, getSkillMenu } from './prompt-skills.js';
 import {
   ACTION_REGISTRY,
   ActionEngine,
@@ -106,18 +107,28 @@ const chatStore = {
   }
 };
 
-// ── Token Usage Tracker ──
+// ── Token Usage Tracker (persisted) ──
 const tokenTracker = {
   session: { requests: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0 },
-  history: [], // per-request log: { timestamp, promptTokens, completionTokens, totalTokens, model }
+  history: [],       // current session
+  allHistory: [],    // persisted across sessions
+
+  async init() {
+    try {
+      const data = await chrome.storage.local.get('usageHistory');
+      this.allHistory = data.usageHistory || [];
+    } catch { this.allHistory = []; }
+    this._updateUI();
+  },
 
   record(usage, model) {
     const entry = {
       timestamp: new Date().toISOString(),
-      promptTokens: usage.prompt_tokens || usage.input_tokens || 0,
-      completionTokens: usage.completion_tokens || usage.output_tokens || 0,
+      promptTokens: usage.prompt_tokens || usage.input_tokens || usage.promptTokens || usage.inputTokens || 0,
+      completionTokens: usage.completion_tokens || usage.output_tokens || usage.completionTokens || usage.outputTokens || 0,
       totalTokens: 0,
-      model: model || 'unknown'
+      model: model || 'unknown',
+      skills: this._lastSkills || []
     };
     entry.totalTokens = entry.promptTokens + entry.completionTokens;
     this.session.requests++;
@@ -125,16 +136,29 @@ const tokenTracker = {
     this.session.completionTokens += entry.completionTokens;
     this.session.totalTokens += entry.totalTokens;
     this.history.push(entry);
+    this.allHistory.push(entry);
+    this._persist();
     this._updateUI();
     return entry;
   },
 
+  _persist() {
+    // Keep last 500 entries max
+    if (this.allHistory.length > 500) {
+      this.allHistory = this.allHistory.slice(-500);
+    }
+    chrome.storage.local.set({ usageHistory: this.allHistory }).catch(() => {});
+  },
+
   _updateUI() {
-    const el = document.getElementById('tokenStats');
+    const el = document.getElementById('tokenStatsText');
     if (!el) return;
     const s = this.session;
     el.textContent = `${s.requests} req · ${this._fmt(s.totalTokens)} tokens`;
-    el.title = `Prompt: ${this._fmt(s.promptTokens)} · Completion: ${this._fmt(s.completionTokens)} · Total: ${this._fmt(s.totalTokens)} · Requests: ${s.requests}`;
+    const statsEl = document.getElementById('tokenStats');
+    if (statsEl) {
+      statsEl.title = `Session: ${s.requests} requests, ${this._fmt(s.totalTokens)} tokens | All time: ${this.allHistory.length} requests`;
+    }
   },
 
   _fmt(n) {
@@ -147,12 +171,30 @@ const tokenTracker = {
     this._updateUI();
   },
 
+  clearAll() {
+    this.allHistory = [];
+    chrome.storage.local.set({ usageHistory: [] }).catch(() => {});
+  },
+
   getSummary() {
     const s = this.session;
     return {
       ...s,
       avgTokensPerRequest: s.requests > 0 ? Math.round(s.totalTokens / s.requests) : 0,
       history: this.history
+    };
+  },
+
+  getAllTimeSummary() {
+    const all = this.allHistory;
+    const totalTokens = all.reduce((sum, e) => sum + e.totalTokens, 0);
+    const promptTokens = all.reduce((sum, e) => sum + e.promptTokens, 0);
+    const completionTokens = all.reduce((sum, e) => sum + e.completionTokens, 0);
+    return {
+      requests: all.length,
+      totalTokens, promptTokens, completionTokens,
+      avgTokensPerRequest: all.length > 0 ? Math.round(totalTokens / all.length) : 0,
+      history: all
     };
   }
 };
@@ -187,6 +229,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   await loadSettings();
   initActionEngine();
   await actionLog.load();
+  await tokenTracker.init();
   await loadApiCatalog();
   setupEventListeners();
   requestContext();
@@ -529,29 +572,71 @@ function updateContext(context) {
   const contextIcon = $('#contextIcon');
   const contextText = $('#contextText');
   const welcomeText = $('#welcomeText');
-  const chipsContainer = $('#suggestionChips');
-  if (!contextIcon || !contextText || !chipsContainer) return;
+  const quickSelect = $('#quickStartSelect');
+  if (!contextIcon || !contextText || !quickSelect) return;
 
-  // Update context bar
-  const icons = {
-    processes: '⚙️', forms: '📝', users: '👥', settings: '🔧',
-    dashboards: '📊', reports: '📈', requests: '📋', tasks: '✅',
-    'api-index': '🔌', 'api-docs': '📖', unknown: '📍'
+  // Update context bar with SVG icons
+  const svgIcons = {
+    processes: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>',
+    forms: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>',
+    users: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>',
+    settings: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 21v-7"/><path d="M4 10V3"/><path d="M12 21v-9"/><path d="M12 8V3"/><path d="M20 21v-5"/><path d="M20 12V3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>',
+    dashboards: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>',
+    reports: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 20V10"/><path d="M12 20V4"/><path d="M6 20v-6"/></svg>',
+    requests: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>',
+    tasks: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 11-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>',
+    'api-index': '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>',
+    'api-docs': '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/></svg>',
+    unknown: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z"/></svg>'
   };
-  contextIcon.textContent = icons[page] || '📍';
+  contextIcon.innerHTML = svgIcons[page] || svgIcons['unknown'];
   contextText.textContent = context.section || 'Workflow Admin';
 
   // Update welcome
   if (welcomeText) welcomeText.textContent = suggestions.greeting;
 
-  // Update suggestion chips
-  chipsContainer.innerHTML = '';
-  (suggestions.suggestions || []).forEach(suggestion => {
-    const chip = document.createElement('button');
-    chip.className = 'chip';
-    chip.textContent = suggestion;
-    chip.addEventListener('click', () => sendMessage(suggestion));
-    chipsContainer.appendChild(chip);
+  // Populate Quick Start dropdown
+  populateSuggestions(suggestions.suggestions || []);
+}
+
+let _allSuggestions = []; // full list for current context
+const MAX_VISIBLE_SUGGESTIONS = 4;
+
+function populateSuggestions(suggestions, shuffle = false) {
+  const select = $('#quickStartSelect');
+  if (!select) return;
+
+  _allSuggestions = [...suggestions];
+
+  // Pick a subset to display
+  let pool = [..._allSuggestions];
+  if (shuffle) {
+    // Fisher-Yates shuffle
+    for (let i = pool.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [pool[i], pool[j]] = [pool[j], pool[i]];
+    }
+  }
+  const visible = pool.slice(0, MAX_VISIBLE_SUGGESTIONS);
+
+  // Clear and rebuild
+  select.innerHTML = '';
+
+  const placeholder = document.createElement('option');
+  placeholder.value = '';
+  placeholder.disabled = true;
+  placeholder.selected = true;
+  const total = _allSuggestions.length;
+  placeholder.textContent = total > MAX_VISIBLE_SUGGESTIONS
+    ? `Quick Start — showing ${visible.length} of ${total} suggestions`
+    : `Quick Start — ${total} suggestion${total !== 1 ? 's' : ''}`;
+  select.appendChild(placeholder);
+
+  visible.forEach(s => {
+    const opt = document.createElement('option');
+    opt.value = s;
+    opt.textContent = s;
+    select.appendChild(opt);
   });
 }
 
@@ -563,7 +648,7 @@ chrome.runtime.onMessage.addListener((message) => {
 });
 
 // ── Chat ──
-function addMessage(content, role) {
+function addMessage(content, role, { displayOnly = false } = {}) {
   const container = $('#chatMessages');
   const welcome = container.querySelector('.welcome-message');
   if (welcome) welcome.remove();
@@ -573,7 +658,7 @@ function addMessage(content, role) {
 
   if (role === 'assistant') {
     // Check for executable action blocks in the response
-    if (actionEngine) {
+    if (actionEngine && !displayOnly) {
       const actions = actionEngine.parseActionsFromResponse(content);
       // Auto-inject formId from context if the LLM omitted it
       if (currentContext.entityId) {
@@ -1544,7 +1629,7 @@ function formatRecipe(recipe) {
 
 // ── Workflow AI Execute ──
 async function callWorkflowAI(userMessage, context) {
-  const systemPrompt = buildSystemPrompt();
+  const systemPrompt = buildSystemPrompt(userMessage);
   const baseUrl = settings.baseUrl || await getBaseUrl();
 
   if (!baseUrl) {
@@ -1583,17 +1668,19 @@ async function callWorkflowAI(userMessage, context) {
   const data = await response.json();
 
   // ── Track token usage ──
-  // Try to extract usage from response (providers nest it differently)
+  // Try to extract usage from response — providers nest it differently
   const usage = data.usage                              // Anthropic direct: { input_tokens, output_tokens }
     || data.data?.usage                                  // Wrapped: { data: { usage: ... } }
     || data.choices?.[0]?.usage                          // OpenAI variant
+    || data.metadata?.usage                              // Metadata wrapper
+    || data.response?.usage                              // Response wrapper
     || null;
-  const model = data.model || data.data?.model || settings.aiProvider || 'unknown';
+  const model = data.model || data.data?.model || data.metadata?.model || settings.aiProvider || 'unknown';
   if (usage) {
     tokenTracker.record(usage, model);
   } else {
     // Fallback: estimate tokens (~4 chars per token) when API doesn't return usage
-    const responseText = data.data || data.content || data.text || '';
+    const responseText = data.data || data.content || data.text || data.choices?.[0]?.message?.content || '';
     const estPrompt = Math.ceil(fullUserPrompt.length / 4) + Math.ceil(systemPrompt.length / 4);
     const estCompletion = Math.ceil((typeof responseText === 'string' ? responseText.length : JSON.stringify(responseText).length) / 4);
     tokenTracker.record({ prompt_tokens: estPrompt, completion_tokens: estCompletion }, model + ' (est.)');
@@ -1610,470 +1697,55 @@ async function callWorkflowAI(userMessage, context) {
   return JSON.stringify(data);
 }
 
-function buildSystemPrompt() {
-  const externalServiceList = Object.entries(EXTERNAL_SERVICES)
-    .map(([k, v]) => `- ${v.name}: ${v.description} (auth: ${v.authMethods?.join(', ')})`)
-    .join('\n');
+function buildSystemPrompt(userMessage = '') {
+  // Resolve which skill modules to load based on user message + page context
+  const skillKeys = resolveSkills(userMessage, currentContext);
+  const skillPrompt = buildSkillPrompt(skillKeys);
+  const skillMenu = getSkillMenu();
 
-  return `You are Workflow Copilot, an expert AI assistant for the Nutrient Workflow platform. You help users architect and build integrations between Workflow and any external service.
+  // Log skills loaded for debugging (visible in token tracker)
+  tokenTracker._lastSkills = skillKeys;
 
-## Your Core Knowledge
-
-### Nutrient Workflow API (508 endpoints across 12 services):
-${Object.entries(API_SERVICES).map(([k, v]) => `- ${v.title} (${v.baseUrl}): ${v.description}`).join('\n')}
-
-### Integration Architecture Patterns:
-There are THREE ways to connect Workflow to external services:
-
-1. **REST Client Task** (in a process) — automated server-side API call that fires during workflow execution
-   - Created via: POST /api/integrations/restful-requests (define the request)
-   - Configured via: POST /api/task-dispatcher/restClient/{processTaskSid}/config/settings (link to task)
-   - Data mapped via: POST /api/processes/processTask/{processTaskSid}/mappings (map process data to request params)
-   - Tested via: POST /api/task-dispatcher/restClient/{processTaskSid}/test
-
-2. **RESTful Data Element** (on a form) — interactive API call triggered by form events
-   - Configured in Form Builder (no API endpoint — it's a drag-and-drop element)
-   - Value sources: Fixed, Form Field, Credential, Server Variable
-   - Response mapping: JSONata expressions (e.g., $.items{ $.id : $.name } for dropdowns)
-   - Chaining: element.request.executeRequest(runId) + onResponse handlers
-   - Server Variables persist data between calls (auth tokens, IDs)
-   - All requests execute server-side (no CORS)
-
-3. **Database Connection** — direct SQL queries against external databases
-   - Created via: POST /api/integrations/connections
-   - Tested via: POST /api/integrations/connections/database/test
-   - Custom tables via: POST /api/integrations/customtable/{connectionId}/schemas/{tableName}
-
-### Credentials Management:
-- Store: POST /api/integrations/credentials/create
-- Scope levels: task < process < user < tenant
-- Referenced in requests via {{credential:name}} syntax
-- Supports: bearer-token, api-key, basic-auth, custom
-
-### External Service Integration Guides:
-${externalServiceList}
-
-### Slack Integration Details:
-- Webhook approach: POST to Incoming Webhook URL, simple but single-channel
-- Bot Token approach: POST https://slack.com/api/chat.postMessage with Bearer xoxb-token
-- Threading: Use thread_ts parameter for threaded replies
-- Channel lookup: GET https://slack.com/api/conversations.list
-- Block Kit for rich messages: https://api.slack.com/block-kit
-
-### Stripe Integration Details:
-- PaymentIntents API for SCA-compliant payments
-- Create intent: POST https://api.stripe.com/v1/payment_intents (form-urlencoded, NOT JSON)
-- Refunds: POST https://api.stripe.com/v1/refunds (payment_intent={pi_id}&amount={cents})
-- Amount is always in cents (e.g., $50.00 = 5000)
-- Client-side: Stripe.js + Payment Element for card collection
-- Server-side: REST Client tasks for charges, refunds, lookups
-- Store Stripe Secret Key (sk_) as credential, Publishable Key (pk_) in form JavaScript
-
-### Process Flow for Integrations:
-When building an integration process:
-1. Store external service credentials → POST /api/integrations/credentials/create
-2. Define the REST request → POST /api/integrations/restful-requests
-3. Create/configure process → POST /api/processes + task configuration
-4. Add REST Client task → configure via task-dispatcher
-5. Map data between tasks → POST /api/processes/processTask/{id}/mappings
-6. Set transition rules → POST /api/processes/tasks/{id}/rules
-7. Test → POST /api/task-dispatcher/{tasktype}/{id}/test
+  return `You are Workflow Copilot, an expert AI assistant for the Nutrient Workflow platform. You help users build forms, create reports, design processes, and integrate with external services.
 
 ## EXECUTABLE ACTIONS — You can DO things, not just advise!
 
-You have the ability to execute actions directly in the user's Workflow environment. When appropriate, include an action block in your response that the user can execute with one click.
-
-**Format:** Include a fenced code block with the language tag "action" containing a JSON object:
+Include a fenced code block with the language tag "action" containing a JSON object:
 
 \`\`\`action
 {"actionId": "action-id-here", "params": { ... }}
 \`\`\`
 
-**Available actions:**
-
-**Level 1 — API Actions:**
-- \`create-credential\` — params: name, valueType (bearer-token|apiKey|username-password), value, [resourceKind], [scope]
-- \`create-restful-request\` — params: name, method, url, [headers], [body], [auth], [mappings]
-- \`start-workflow-instance\` — params: processSid, [subject], [priority], [prefills]
-- \`list-processes\` — no params needed
-- \`list-forms\` — no params needed
-- \`list-credentials\` — params: [valueType], [scope]
-- \`create-ai-connection\` — params: name, provider, model, credentialId
+**Always-available actions:**
 - \`get-form-json\` — params: formId
+- \`list-forms\` — no params
+- \`list-processes\` — no params
 
-**Level 2 — Process Builder Actions:**
-- \`create-process\` — params: name, [description], [category]
-- \`add-process-task\` — params: processSid, name, taskType (Form|Approval|RestClient|Email|Script|Notification|WebForm), [formId]
-- \`configure-task-transition\` — params: taskId, targetTaskId, [condition], [conditionType], [label]
-- \`add-task-recipient\` — params: taskId, recipientType (user|group|role), recipientId
-- \`configure-data-mapping\` — params: taskId, sourceField, targetField, [sourceCategory]
-- \`configure-rest-client-task\` — params: taskId, method, url, [headers], [body], [auth]
+## Available Capabilities:
+${skillMenu}
 
-**Level 2 — Form Actions:**
-- \`create-form\` — params: name, [description]
-- \`create-form-with-layout\` — params: name, layout (full JSON)
-- \`add-field-to-form\` — Add a single question/field. Params: formId, field (question object with type:"Question_Type"), [afterClientId], [sectionClientId (label or ID of the target section)], [containerIndex], [columnIndex]. **Use sectionClientId to place a field in a specific section** (e.g., sectionClientId: "Approval Process"). Without it, the field goes into the first section.
-- \`rename-section\` — Rename an existing section. Params: formId, sectionClientId (use current label!), newLabel. Use this when the user says "rename", "relabel", or "change the name of" a section.
-- \`add-section-to-form\` — Add a new layout section. Params: formId, sectionLabel, [insertAfterSectionIndex], [containerColumns], [fields].
-- \`add-container-to-section\` — **Add a container to an EXISTING section.** Params: formId, sectionClientId (the ClientID of the target section), columns (number of columns, e.g. 2), [fields] (optional field objects to put in it). Use this when the user asks to add a multi-column container to a section that already exists.
-- \`move-fields-to-new-section\` — Move existing fields to a NEW section. Params: formId, fieldClientIds (array of field ClientIDs OR Labels — the engine matches by either), newSectionLabel, [insertAfterSectionIndex], [containerColumns], [fieldsPerColumn].
-- \`move-fields-to-container\` — Move existing fields to an EXISTING container. Params: formId, fieldClientIds (array of field ClientIDs OR Labels — e.g. ["Phone Number", "Email"] works just as well as ["txtPhoneNumber", "emlEmail"]), targetSectionClientId, [targetContainerIndex] (0-based), [targetContainerColumns] (find container by column count, e.g. 2 for the 2-column container — **prefer this over targetContainerIndex when the user references a container by its column count**), [targetColumnIndex] (0-based).
-- \`reorder-sections\` — Reorder sections on the form. Params: formId, sectionOrder (array of section ClientIDs in desired order).
-- \`reorder-containers\` — Reorder containers within a section. Params: formId, sectionClientId, containerOrder (array of container ClientIDs in desired order).
-- \`resize-container\` — Change the number of columns in an existing container. Params: formId, sectionClientId, newColumnCount, PLUS one of: [containerColumns] (find by current column count), [containerContainsField] (find by field ClientID/label inside it), [containerIndex] (0-based). When adding columns, empty columns are appended. When reducing, fields from removed columns are moved to the last remaining column. **Use this when the user wants to convert a 1-column container to 2-column (or vice versa) before moving fields.**
-- \`move-container-to-section\` — Move an entire container (with all fields) between sections. Params: formId, targetSectionClientId (use section label!), PLUS one of these to identify the source container (in priority order):
-  (a) sourceSectionClientId + sourceContainerContainsField — find the container holding a specific field by ClientID or label. **BEST for disambiguation.** E.g., "the container with First Name" → sourceContainerContainsField:"txtFirstName"
-  (b) sourceSectionClientId + sourceContainerColumns — find by column count. E.g., sourceContainerColumns:2
-  (c) sourceSectionClientId + sourceContainerIndex — find by position (0-based)
-  (d) containerClientId — exact container ID (avoid, hard to get right)
-
-**CRITICAL — Form Layout Hierarchy:**
-- SECTION (type: "Section_Type") → collapsible grouping. Created with add-section-to-form.
-- CONTAINER (type: "Container_Type") → lives inside a section's .contents[]. Holds columns. Created with add-container-to-section.
-- COLUMN → lives inside a container's .columns[]. Holds items (fields).
-- FIELD/QUESTION (type: "Question_Type") → lives inside a column's .items[]. ShortText, SelectList, Calendar, etc.
-- NEVER create a question with QuestionType="Section" — sections are layout elements, not questions.
-- When the user says "add a 2-column container to the Pets section", use add-container-to-section with the section's ClientID and columns:2.
-- Section ClientIDs look like timestamps ending in "s" (e.g. "1773951418087s"). Get them from get-form-json or infer from context.
-- **Container identification**: When the user references a container by column count (e.g. "the 2-column container"), use targetContainerColumns/sourceContainerColumns instead of guessing a container index. When the user references a container by a field it contains, use sourceContainerContainsField. Avoid using index-based targeting unless explicitly requested.
-- **Sanity-check requests**: Before executing, verify the request is logically possible. A 1-column container only has column index 0 — you CANNOT place fields in "the second column" of a 1-column container. If the user asks for something impossible, explain why and suggest alternatives (e.g., "That container only has 1 column. I can first resize it to 2 columns with \`resize-container\`, then move the fields."). If the user agrees, use \`resize-container\` first, then \`move-fields-to-container\` as a second action. NEVER fabricate a successful result for an impossible operation.
-- \`update-field\` — **Update properties of an existing field in place.** Params: formId, fieldIdentifier (ClientID or Label of the field), updates (object of properties to merge). The engine finds the field and deep-merges your updates — it does NOT replace the field, only changes the keys you specify. Use this to configure RESTful Elements, change labels, update validation, set dbSettings, etc. Example: to configure a RESTful Element's API call, use updates: { dbSettings: { restRequest: { method: "POST", url: "...", ... } } }.
-- **NEVER use update-form-layout** — it has been removed because it risks wiping the entire form. Always use targeted actions instead.
-- \`update-form-javascript\` — Write JS to the form's JavaScript tab. Params: formId, javascript (the code string), mode ("replace" = overwrite all, "append" = add to existing, default "replace"). The engine fetches the form, injects the JS, and saves — you do NOT need get-form-json first.
-- \`update-form-css\` — Write CSS to the form's CSS tab. Params: formId, css (the code string), mode ("replace" | "append", default "replace"). Same GET→modify→PUT pattern as JS.
-- \`add-rule\` — Add a conditional rule to the form. Params: formId, name (rule name), conditions (array), effects (array), [logic: "all"|"any" (default "all")], [createInverse: true|false (default true)].
-  - Each condition: { field: "Label or ClientID", operator: "equals"|"!="|"contains"|"is empty"|etc., value: "the value" }
-  - Each effect: { action: "show"|"hide"|"disable"|"enable"|"required"|"unrequired"|"readOnly"|"editable"|"set answer", target: "Label or ClientID", targetType: "question"|"section" }
-  - The engine resolves field labels to IDs, builds full question snapshots, generates uiJson/ruleString, and auto-creates the inverse rule.
-  - Operators: equal, notEqual, lessThan, lessThanInclusive, greaterThan, greaterThanInclusive, containsValue, doesNotContainValue, isEmpty, isNotEmpty. The engine also accepts aliases like "equals", "!=", "contains", "is empty", etc.
-  - Effects: show, hide, disable, enable, readOnly, editable, required, unrequired, set_answer_with_value, set_answer_with_function. Engine accepts aliases like "visible", "hidden", "mandatory", "optional", etc.
-  - Inverse rules are auto-generated with flipped operators and effects (show↔hide, required↔unrequired, equal↔notEqual, any↔all).
-  - Example: name: "Show Comments", logic: "all", conditions: [{field: "Budgeted?", operator: "equals", value: "No"}], effects: [{action: "show", target: "Comments", targetType: "question"}, {action: "required", target: "Comments", targetType: "question"}]
-  - **CRITICAL ORDERING: ALL fields referenced in conditions and effects MUST already exist on the form BEFORE calling add-rule.** The engine resolves fields by label/ClientID from the live form data. If a field hasn't been added yet, the rule will fail. Always add fields FIRST, then add rules LAST.
-  - When creating fields + rules in one response, use SEPARATE action blocks in this order: (1) add-field-to-form for ALL fields, (2) add-rule AFTER all fields exist.
-- \`remove-rule\` — Remove a rule by name. Params: formId, ruleName. Also removes the inverse rule by default (set removeInverse: false to keep it).
-- **IMPORTANT — Rules vs JavaScript**: Do NOT mix Form Rules and JavaScript on the same form for controlling visibility/state. If the form uses script with onChange handlers, use script for all conditional logic. If the form uses Rules, use Rules for all conditional logic. Binding onChange in script disables that question from triggering Form Rules.
-
-**IMPORTANT — Form Builder JSON structure:**
-The form GET response is: { _id, name, sid, layout: [...sections], script, css, rules, version }
-Inside layout: sections[] → .contents[] (containers) → .columns[] → .items[] (questions)
-
-**Known ClientID conventions on forms:**
-- Short Text: txtFieldName (e.g., txtFirstName, txtLastName, txtCity)
-- Long Text: ltxtFieldName (e.g., ltxtAddress)
-- Select List: ddlFieldName (e.g., ddlPosition)
-- Calendar: calFieldName (e.g., calStartingDate)
-- Checkboxes: chkFieldName
-- Radio: radFieldName
-- Email: emlFieldName
-- Number: numFieldName
-- Grid: grdFieldName (e.g., grdLineItems, grdInventory)
-When the user says "under First Name", use afterClientId: "txtFirstName". You can infer ClientIDs from field labels using these conventions.
-
-**Field object templates by QuestionType (use these EXACT structures):**
-
-ShortText / LongText / EmailAddress / Password:
-\`\`\`json
-{"id":"new_1","ClientID":"txtFieldName","type":"Question_Type","Label":"Field Label","QuestionType":"ShortText","displayName":"Short Text","show":true,"class":"","flex":100,"validation":{"required":false,"requiredMessage":null,"min":null,"minMessage":null,"max":null,"maxMessage":null,"regEx":null,"regExMessage":null},"events":{"onChange":null,"onFocus":null,"onBlur":null},"Choices":null,"Answer":null,"columnOrRow":null,"multiple":null,"dbSettings":null,"gridOptions":null,"formtext":null,"placeholder":null,"helpText":null}
-\`\`\`
-For LongText: QuestionType:"LongText", displayName:"Long Text", prefix ltxt_
-For EmailAddress: QuestionType:"EmailAddress", displayName:"Email", prefix eml_
-For Password: QuestionType:"Password", displayName:"Password", prefix pwd_
-
-Radio Buttons (QuestionType is "DbRadioButton" NOT "RadioButtons"):
-\`\`\`json
-{"id":"new_2","ClientID":"radFieldName","type":"Question_Type","Label":"Field Label","QuestionType":"DbRadioButton","displayName":"Radio Buttons","show":true,"class":"","flex":100,"columnOrRow":"row","dbSettings":{"useDB":false},"validation":{"required":false,"requiredMessage":"This field is required","min":null,"minMessage":null,"max":null,"maxMessage":null,"regEx":null,"regExMessage":null},"events":{"onChange":null,"onFocus":null,"onBlur":null},"Choices":[{"Label":"Option 1","Value":"option1"},{"Label":"Option 2","Value":"option2"}],"Answer":null,"multiple":null,"gridOptions":null,"formtext":null,"placeholder":null,"helpText":null}
-\`\`\`
-
-Checkboxes (QuestionType is "DbCheckbox"):
-\`\`\`json
-{"id":"new_3","ClientID":"chkFieldName","type":"Question_Type","Label":"Field Label","QuestionType":"DbCheckbox","displayName":"Checkboxes","show":true,"class":"","flex":100,"columnOrRow":"row","dbSettings":{"useDB":false},"validation":{"required":false,"requiredMessage":null,"min":null,"minMessage":null,"max":null,"maxMessage":null,"regEx":null,"regExMessage":null},"events":{"onChange":null,"onFocus":null,"onBlur":null},"Choices":[{"Label":"Option 1","Value":"option1","Selected":false}],"Answer":null,"multiple":null,"gridOptions":null,"formtext":null,"placeholder":null,"helpText":null}
-\`\`\`
-
-Select List (QuestionType is "DbSelectList"):
-\`\`\`json
-{"id":"new_4","ClientID":"ddlFieldName","type":"Question_Type","Label":"Field Label","QuestionType":"DbSelectList","displayName":"Select List","show":true,"class":"","flex":100,"dbSettings":{"useDB":false},"validation":{"required":false,"requiredMessage":null,"min":null,"minMessage":null,"max":null,"maxMessage":null,"regEx":null,"regExMessage":null},"events":{"onChange":null,"onFocus":null,"onBlur":null},"Choices":[{"Label":"Option 1","Value":"option1"}],"Answer":null,"columnOrRow":null,"multiple":false,"gridOptions":null,"formtext":null,"placeholder":null,"helpText":null}
-\`\`\`
-
-Calendar: QuestionType:"Calendar", displayName:"Calendar", prefix cal_
-Number: QuestionType:"Number", displayName:"Number", prefix num_
-File Attachment: QuestionType:"FileAttachment", displayName:"File Attachment", prefix fa_
-Signature: QuestionType:"Signature", displayName:"Signature", prefix sig_
-
-Grid: QuestionType:"Grid", displayName:"Grid", prefix grd_
-The engine builds the FULL Grid structure from a simplified spec. You provide:
-- QuestionType: "Grid", Label, ClientID (prefix grd)
-- columns: array of column specs — each needs at minimum: { name, displayName, type, width }
-- Supported column types: "string", "number", "currency", "boolean", "date", "StaticText", "MultiChoiceSelectList", "FileAttachment", "RowAggregation"
-- For MultiChoiceSelectList columns: include choices: [{Label, Value}] or ["High","Medium","Low"]
-- For RowAggregation (computed columns): include aggregationColumnNames: ["QTY","Cost"], rowAggregationType: "multiply"|"sum"
-- For currency: optionally include selectedCurrencyFilter: "en-us"
-- Optional: rowCount (default 3), gridOptions: { enableFiltering, showAddRowButton, maxHeight }
-- The engine auto-generates: columnDefs with full properties, row data (Answer + gridOptions.data + prefillValues in sync), cellTemplates, buttons, all ui-grid boilerplate.
-Example:
-\`\`\`json
-{"QuestionType":"Grid","Label":"Line Items","ClientID":"grdLineItems","columns":[{"name":"Description","displayName":"Description","type":"string","width":"200","validators":{"required":true}},{"name":"QTY","displayName":"QTY","type":"number","width":"75"},{"name":"Price","displayName":"Price","type":"currency","width":"100"},{"name":"Priority","displayName":"Priority","type":"MultiChoiceSelectList","width":"120","choices":["High","Medium","Low"]},{"name":"Total","displayName":"Total","type":"RowAggregation","width":"125","aggregationColumnNames":["QTY","Price"],"rowAggregationType":"multiply"}],"rowCount":3}
-\`\`\`
-
-**Grid column width rules:**
-- Column widths can be a fixed pixel string like "125" or "200", OR "*" which means flex/auto-expand to fill remaining space.
-- At LEAST one column should use width "*" so the grid expands to fill the screen. Typically use "*" for the widest/most flexible column (e.g., Description, Notes) or the last column.
-- Good pattern: fixed widths for small columns (number "75", boolean "80", date "125"), "*" for text/description columns.
-- NEVER set fixed widths on every column — the grid will look cramped and won't fill the available width.
-
-**Grid aggregation rules:**
-- **RowAggregation columns** compute a per-ROW value across 2+ source columns (e.g., Total = QTY × Price). They ONLY make sense with 2+ aggregationColumnNames. NEVER create a RowAggregation that references a single column — it's redundant.
-- **Footer aggregation** shows a column-level total at the bottom (e.g., sum of all Amount values). This is set on the column itself with aggregationType: 2, NOT as a separate RowAggregation column. Use \`update-grid-column\` to enable it: updates: { aggregationType: 2, aggregationLabel: " ", footerCellFilter: "intCurrency:\\"en-us\\"" }.
-- If the user asks for a "total" of a single column, enable footer aggregation on that column — do NOT add a RowAggregation column.
-- Make sure showColumnFooter is true in gridOptions for footer aggregation to be visible (it is by default).
-
-**Grid-specific actions** (for modifying existing Grids):
-- \`add-grid-column\` — Add a column to a Grid. Params: formId, fieldIdentifier (Grid's ClientID/Label), column ({name, displayName, type, width, ...}), [afterColumnName].
-- \`remove-grid-column\` — Remove a column. Params: formId, fieldIdentifier, columnName.
-- \`update-grid-column\` — Update column properties (displayName, width, validators, choices, etc.). Params: formId, fieldIdentifier, columnName, updates.
-- \`add-grid-row\` — Add row(s). Params: formId, fieldIdentifier, [rowCount] (default 1), [rowData] (partial data to pre-fill).
-
-**CRITICAL QuestionType values** (use these EXACTLY — the display name differs from the internal type):
-- Radio Buttons → QuestionType: "DbRadioButton" (NOT "RadioButtons")
-- Checkboxes → QuestionType: "DbCheckbox" (NOT "Checkbox" or "Checkboxes")
-- Select List → QuestionType: "DbSelectList" (NOT "SelectList")
-- Email → QuestionType: "EmailAddress" (NOT "Email")
-- Long Text → QuestionType: "LongText" (NOT "Textarea")
-- Short Text → QuestionType: "ShortText"
-- Calendar → QuestionType: "Calendar"
-- Number → QuestionType: "Number"
-- RESTful Element → QuestionType: "RESTfulElement" (NOT "RestfulElement" or "RESTful")
-- Grid → QuestionType: "Grid"
-- Button → QuestionType: "Button" (type is "FormTool_Type", NOT "Question_Type" — the engine handles this automatically)
-
-**Field Templates — the engine auto-builds full structures.** You only need to provide:
-- QuestionType, Label, ClientID (with correct prefix), and any type-specific config (Choices for radio/checkbox/select, validation, restRequest for RESTfulElement).
-- The engine fills in all required properties (displayName, show, flex, events, dbSettings, etc.) automatically.
-- For RESTfulElement: provide QuestionType:"RESTfulElement", Label, ClientID (prefix rest_), and optionally a restRequest object for pre-configuration.
-- For Button: provide QuestionType:"Button", Label, ClientID (prefix btn). Buttons use onClick events (not onChange). The engine sets type:"FormTool_Type" automatically.
-- For hidden fields (data buffers): set hidden:true on any field to hide it at runtime. Convention: include "(hidden)" in the Label for builder clarity. Set stopBlurSave:true on fields that change frequently (e.g., pagination cursors).
-
-**RESTful Element restRequest structure** (lives at dbSettings.restRequest):
-The engine normalizes whatever you provide, but here is the target schema:
-- method: "GET"|"POST"|"PUT"|"DELETE"
-- url: full URL string
-- headers: array of {key, value, enabled:true, source:"fixed"} OR plain object {"Content-Type":"application/json"} (engine converts)
-- queryParams: same format as headers
-- auth: {type:"none"|"bearer"|"oauth2", credentialId:"...", grantType:"...", tokenUrl:"...", ...}
-- body: {type:"none"|"form"|"raw", contentType:"application/json", raw:"...", urlEncoded:[{key,value,enabled,source}]} OR plain string (engine wraps as raw) OR plain object {amount:"100"} (engine converts to urlEncoded form)
-- response: {expectedStatus:[], enableTimeout:false, timeoutDuration:30000, retryOnFailure:false, maxRetries:3, responseMode:"standard"}
-- mappings: array of response-to-field mappings. Each: {responsePath:"$.results[*]", mapTo:"field", fieldId:"txtTargetField", serverVariableName:"", filename:{}, contentType:{}}. Use JSONPath syntax for responsePath.
-- envVars: array of placeholder substitutions. Each: {key:"__placeholder__", source:"field", fieldId:"txtSourceField", enabled:true}. Placeholders in the request body/URL matching the key are replaced with the field's current value at execution time. Useful for pagination cursors, dynamic parameters, etc.
-- restRequestUISettings: {hideProgressIndicator:true} — optional, hides the loading spinner during execution (useful for background/chained requests)
-
-**Response Mappings pattern** (REST → hidden field → script → Grid):
-When fetching data from external APIs (Notion, Salesforce, etc.), use this pattern:
-1. RESTful Element fetches data, mappings dump response into hidden ShortText fields (data buffers)
-2. Hidden field's onChange handler processes the raw data in form script
-3. Script populates a Grid or Select List with the processed results
-- For paginated APIs: use TWO RESTful Elements — one for initial fetch, one for "get next page" with an envVar placeholder (e.g., __start_cursor__) that resolves from a hidden cursor field. The cursor field's onChange triggers the next-page fetch, creating a self-chaining pagination loop.
-
-**Configuring RESTful Elements:**
-- Use \`update-field\` with fieldIdentifier and updates: { dbSettings: { restRequest: { method, url, headers, body, auth } } }.
-- If the RESTful Element does NOT exist yet, \`update-field\` will **automatically create it** when the updates contain restRequest config. No need for a separate add-field step.
-- NEVER try to configure a RESTful Element by replacing the entire form layout. Always use \`update-field\`.
-
-**Level 2 — Report Actions:**
-- \`create-report\` — Create a new report. Params: name, [category] (human-readable name — engine auto-resolves to SID), [categorySid] (direct SID if known), [processName] (human-readable — engine auto-resolves to objectSid), [objectSid] (direct process SID), [dataType] ('request'|'task'|'custom', default 'request'), [filters], [description], [allowChart], [hideInMyReports]. Do NOT pass columns — the engine auto-generates valid columns from the process. Do NOT call get-report-categories or list-processes first. Just emit create-report directly.
-- \`get-report\` — Fetch a report by SID. Params: reportSid
-- \`update-report\` — Update a report (GET→merge→PUT). Params: reportSid, plus any of: [name], [columns] (full replace), [addColumns], [removeColumns] (by alias), [filters] (full replace), [addFilters], [removeFilters] (by expose label), [limits], [description], [allowChart]
-- \`delete-report\` — Delete a report. Params: reportSid
-- \`run-report\` — Run a report with optional filters. Params: reportSid, [filters] (array of {label, value}), [dateFilter] (array ["2024-01-01","2024-12-31"] for date range, or "30" for days)
-- \`search-reports\` — Search reports by name. Params: [search]
-- \`get-report-categories\` — Get the category tree for organizing reports.
-- \`auto-generate-report-columns\` — Auto-generate columns for a report based on its process. Params: reportSid
-- \`export-report\` — Export report data. Params: reportSid, exportType ("csv" or "excel")
-- \`get-report-filters\` — Get exposed filters for a report. Params: reportSid
-
-**Report Concepts — IMPORTANT:**
-Reports have THREE data types (set via dataType):
-- **Request** (default) — One row per request. Shows request-level data (ID, dates, status, requester) plus form field data. Most common.
-- **Task** — One row per task. Shows task-level data (task name, task dates, task status, recipients). Useful for managing assignments, tracking task completion times, and counting iterations. Has extra column sources: Current Task, Any Data, Fixed Value, Data (Matching Iteration), Task (Matching Iteration).
-- **Custom** — SQL queries against internal or external databases. Uses built-in parameters: @user_sid, @date_limit_start, @date_limit_end.
-
-Report types (set via reportType): "Process" (most common) or "Custom".
-
-**"Is Queue" concept**: When a report is a queue, it shows only data related to the current user (their requests, their assigned tasks). Without queue mode, all data is visible regardless of participation.
-
-**Report Column Sources** (what data columns can pull from):
-- **Request**: ID, Date Started, Date Completed, Last Milestone, Last Milestone Date, Subject, Priority, Process Name, Current Task, Current Assignee
-- **Requester**: Name, Email, Department, Title, Division, Cost Center, Location (profile info of who started the request)
-- **Client**: Same profile fields as Requester but for the Client of the process
-- **Client's Manager / Requester's Manager**: Manager profile data
-- **Data**: Form question responses, approval selections — requires selecting a task and then a specific form field. This maps to Task_Input|{fieldId}|{formSid}.
-- **Status**: Current status of a task (completed, initialized, in progress)
-- **Task**: Task name, date started, date completed, task status
-- **Task Completer / Task Recipient**: Profile info for who completed or was assigned a task
-- **Task Completer's Manager / Task Recipient's Manager**: Manager profile data
-- **Current Task** (Task reports only): Task attributes for viewing assignments, counts, timing metrics
-- **Any Data** (Task reports only): Generic access via Label, ID, or Property. WARNING: non-indexed full table scans — use sparingly.
-- **Fixed Value** (Task reports only): User-entered static values
-- **Data (Matching Iteration)** / **Task (Matching Iteration)** (Task reports only): Data for current task iteration
-
-**Report column format:**
-Each column can use either friendly names or explicit mappings:
-- Friendly: { field: "Request ID", alias: "ID", width: "65", sort: "Desc", format: "Date" }
-- Explicit: { mapping_val: "Task_Input|1621267267745|b3af6685-...", mapping_text: "Data - Form - Field", alias: "Project Name", width: "220" }
-- For form fields: { field: "Project Title", formFieldId: "1621267267745", formSid: "b3af6685-...", alias: "Project Name" }
-
-Column properties:
-- alias: Display name (replaces default mapping_text)
-- width: Pixel width as string (e.g., "120")
-- sort: "Asc" or "Desc" (only one column should have a sort)
-- sortable: "Yes" or "No" — whether end users can click to sort
-- format: "Date", "Short Date", "Long Date", "Number", "Currency", "Percent", "Hyperlink", "Attachment - icon", "Request Link", "Task Link", "Task Manage Link"
-- aggregate: "Count", "Sum", "Average", "Min", "Max" — shown in column footer
-- chartoption: "Series" or "Datapoint" — for chart-enabled reports
-
-**Standard report column fields** (resolved automatically by the engine):
-- Request: "Request ID", "Status"/"Last Milestone", "Process Name", "Date Started"/"Start Date", "Date Completed", "Subject", "Priority", "Current Task", "Current Assignee"
-- Requester: "Requester"/"Requester Name", "Requester Email", "Requester Department", "Requester Title"
-
-**Report filter format:**
-- { field: "Status", operator: "contains", value: "Approved", conjunction: "AND" }
-- Operators: equals (Is), not equals (Is Not), contains, not contains (Does Not Contain), begins with (Starts With), ends with (Ends With), greater than, greater than or equal, less than, less than or equal, is empty, is not empty, is in date range. Plus symbols: =, !=, >, <, >=, <=. Engine normalizes all aliases.
-- Conjunction: "AND" (default) or "OR". Double-click And/Or column to toggle.
-- Grouping: Use groupStart: "(" and groupEnd: ")" to group filters into logical units. E.g., (Filter1 OR Filter2) AND Filter3.
-- Exposed filters: Set expose: "Filter Label" to make a filter editable by end users when running the report. Blank values act as "no filter" defaults.
-- Wildcard: % wildcard supported with Is, Is Not, and Contains operators.
-
-**Report limits format:**
-- { startRange: "2024-01-01", endRange: "2024-12-31", pageSize: 25, publishStatus: "Production" }
-- Keys: startRange (minimum date), endRange (maximum date), dateRange (number of days, e.g. "30" or "60"), pageSize (records per page), exposeDateFilter ("Yes"/"No" — let users pick date range at runtime), hideLink ("Yes"/"No" — hide request/task links), includeLaunchRequest ("Yes"/"No"), userFilter ("Yes"/"No" — only show current user's data), publishStatus ("Development"/"Testing"/"Production"), version (process version, e.g. "1,2" for multiple)
-- Date limits are ENFORCED: even if a user selects a wider range at runtime, the admin-configured limit takes precedence (most restrictive wins).
-
-**Report chart options** (when allowChart is true):
-- Chart types: Line, Pie, Bar, Area, Column
-- Each column must be designated as a "Series" or "Datapoint" via the chartoption property
-- Best practice: Build the report data without charts first, verify aggregation, then add chart settings
-- Configure max data points in the Chart Options tab
-
-**Manage Task Reports** (special Task report type):
-- Allows users to manage tasks (reassign, change status) directly from a report without full Manage permission
-- Requires system setting: AllowManageTaskReports = "yes" (System Settings → System Configuration)
-- MUST have "Task Manage Link" as the FIRST column: { field: "ID For Manage Task", format: "Task Manage Link", source: "Current Task" }
-- MUST have a "Task Status" column
-- Reports need manual refresh after management actions
-
-**KPIs (Key Performance Indicators):**
-- A KPI measures time between the completion of two tasks in a process
-- Defined in Process Design → KPIs tab → ADD NEW KPI
-- Configuration: name, start task, end task, target time, upper threshold
-- Color-coded: Green (at/below target), Yellow (between target and upper threshold), Red (above upper threshold)
-- Display types: Gauge and Bar Chart
-- Options: "Show in Request Detail" toggle, "Allow edit KPI date options" toggle
-- When tasks have multiple iterations, KPI uses the FIRST iteration
-- Dashboard widget: KPIs Widget shows average timespans with color indicators
-- KPI API endpoint: GET /api/reports/kpi/instance/{instanceSid}/process/{processId}/timespan/{startTaskId}/{endTaskId}/{startDate}/{endDate}/{timeUnit}
-
-**Composite Actions (multi-step):**
-- \`setup-slack-integration\` — params: slackToken, channelId, [credentialName], [requestName]
-- \`setup-stripe-payment\` — params: stripeSecretKey, [credentialName]
-
-**PREFER BUILT-IN CAPABILITIES OVER JAVASCRIPT:**
-This is a customer-facing tool. Customers should NOT need JavaScript to maintain their forms. Always prefer Workflow's built-in features:
-- **Column sums/totals** → Use footer aggregation (aggregationType: 2 on the column) instead of JS that manually loops and sums
-- **Row calculations** (e.g., Qty × Price = Total) → Use RowAggregation column type instead of JS
-- **Conditional show/hide** → Use Form Rules (add-rule action) instead of JS onChange handlers that toggle field.show
-- **Conditional required/unrequired** → Use Form Rules instead of JS that sets validation.required
-- **Grid column footers** → Built-in with showColumnFooter: true + aggregationType: 2
-Only use JavaScript when there is NO built-in alternative (e.g., complex API chaining, multi-step data transformations, dynamic grid row manipulation, RESTful Element orchestration, pagination loops). When JavaScript IS needed, keep it minimal and well-commented.
-
-**RULES:**
-1. Give a BRIEF (1-2 sentence) explanation of what the action will do BEFORE the action block. Do NOT describe features, usage scenarios, or capabilities — just say what you're about to do.
-2. NEVER describe the result as successful, complete, or ready BEFORE the action executes. The action may fail.
-3. NEVER include actual secrets/tokens in the action block.
+## Rules:
+1. Give a BRIEF (1-2 sentence) explanation of what the action will do BEFORE the action block. Do NOT describe features or capabilities — just say what you're about to do.
+2. NEVER describe the result as successful or ready BEFORE the action executes. The action may fail.
+3. NEVER include actual secrets/tokens in action blocks.
 4. You can include MULTIPLE action blocks in one response for sequential setup.
 5. Actions auto-execute immediately — the user does NOT need to approve.
-5. Use actions when the user asks you to "do", "create", "set up", "configure", "add", "move", "reorganize", etc.
-6. Use advice-only (no action block) when the user asks "how do I", "explain", "what is", etc.
-7. **SECTION IDENTIFICATION — Use LABELS, not ClientIDs!** All section-related params (sectionClientId, targetSectionClientId, sourceSectionClientId) accept EITHER a ClientID OR a section LABEL. The engine resolves labels automatically (case-insensitive). Examples: "Basic Details", "Pets", "Contact Info". This means you do NOT need get-form-json just to find section IDs — use the label directly. You can also use "Section 1", "Section 2" etc. to reference sections by position (1-based). **CRITICAL: If you call get-form-json first, you MUST use the actual labels from the JSON response, not generic names like "Section 1". Read the Label field from each section in the layout array.**
-8. For CONTAINER identification, use the position approach: sourceSectionClientId (use section label!) + sourceContainerIndex (0-based). Example: "the 2nd container in Pets" → sourceSectionClientId: "Pets", sourceContainerIndex: 1.
-9. Only use get-form-json when you need to discover what fields/sections/containers exist on the form (e.g., user says "show me the form structure" or you need field ClientIDs you can't infer).
+6. Use actions when the user asks you to "do", "create", "set up", "configure", "add", "move", "reorganize", etc.
+7. Use advice-only (no action block) when the user asks "how do I", "explain", "what is", etc.
+8. **SECTION IDENTIFICATION — Use LABELS, not ClientIDs!** The engine resolves labels automatically (case-insensitive). Use "Section 1", "Section 2" for positional reference.
+9. Only use get-form-json when you need to discover existing fields/sections/containers.
 10. For field ClientIDs, infer from naming conventions (txtFirstName, emlEmail, calStartDate, ddlPosition).
 11. NEVER fabricate field objects, layouts, or timestamp-based ClientIDs.
+12. **PREFER BUILT-IN CAPABILITIES OVER JAVASCRIPT.** Use Form Rules for conditional show/hide/required. Use Grid aggregation for row calculations. Only use JS when there is NO built-in alternative.
+13. **CRITICAL ORDERING: When creating fields + rules in one response, add ALL fields FIRST, then rules LAST.** The engine resolves fields from live form data.
 
-## Response Guidelines:
-- Always provide specific Workflow API endpoints and external service endpoints
-- Include complete code examples (JSON bodies, JavaScript for forms)
-- Show the full architecture: which Workflow objects to create, in what order
-- For forms, include RESTful Data Element configuration AND JavaScript code
-- For processes, include task types, transitions rules, and data mappings
-- Explain both the Workflow side AND the external service side of any integration
-- When showing Stripe API calls, remember they use application/x-www-form-urlencoded
-- When showing Slack Block Kit, include complete block JSON structures
-- When the user asks to DO something, include executable action blocks so they can execute with one click
-
-### Form Scripting (intForm API):
-The form object is "intForm". NEVER address HTML objects directly.
-- formState: "preview" | "runtime" | "completed"
-- intForm.getElementByClientID(clientID) — access any field
-- intForm.getSectionByClientID(clientID) — access sections
-- intForm.events.onSubmit / onSaveDraft — custom submit handlers (REPLACE built-in, must call intForm.submit()/saveDraft())
-- intForm.submitButton.enable()/disable(), intForm.saveDraftButton.enable()/disable()
-- intForm.recipientTask — TaskName, InstanceSID, InstanceID, Instance.CreatedDate, Instance.LastMilestone
-- intForm.generateUniqueID() — for RESTful element request IDs
-
-Field properties (most types): Answer (RW), Label (RW), show (RW), disabled (RW), readonly (RW), class (RW), flex (RW), validation (RW), events (onChange, onFocus, onBlur), ClientID (R), isdirty (R), originalAnswer (R), QuestionType (R)
-
-Special types:
-- Calendar: use setAnswer('YYYY-MM-DD') or setAnswer(dateObject), NOT direct Answer assignment. todaysDate = server date.
-- Select List: Answer is comma-separated. Choices array has Label/Value. multiple (true/false), multiChoiceAnswer array.
-- Checkboxes: Must set BOTH Answer AND Choices[i].Selected=true. Answer is comma-space separated.
-- Radio Buttons: Answer is selected value, Choices array.
-- Grid: Answer is array of row objects. Use getRowObject() + addRow(). getFooterValues(). gridOptions.data for rows. showDeleteButton(bool), showDeleteColumn(bool).
-- File Attachment: Answer is array of File objects. fileAttachmentData for uploaded files.
-- Contact Search: Answer is array of user objects (Email, ID, Name, SID, Title, UserName).
-- RESTful Element: request.executeRequest(runId), onResponse handler, Server Variables for token persistence.
-- Button: events.onClick handler. No Answer property. Use for triggering actions (search, add to cart, clear, submit).
-
-**Form Script patterns (IMPORTANT — follow these exactly):**
-- Assign ALL event handlers at the TOP LEVEL of the script. Do NOT wrap in formState checks — the script runs in both preview and runtime.
-- Get element references at the top: \`const btnSearch = intForm.getElementByClientID('btnSearch');\`
-- Assign click handlers directly: \`btnSearch.events.onClick = async () => { ... };\`
-- For RESTful Element execution, generate a shared runId: \`const runId = intForm.generateUniqueID();\`
-- Use async/await with try/catch for REST calls: \`await restElement.request.executeRequest(runId);\`
-- Grid manipulation: \`grid.getRowObject()\` for new row, \`grid.addRow(row)\`, \`grid.refreshGrid()\`, \`grid.gridOptions.data.splice(0, grid.Answer.length)\` to clear
-- Self-executing async IIFE for initialization: \`(async () => { await restElement.request.executeRequest(runId); })();\`
-
-Client ID prefixes (best practice): stxt (ShortText), ltxt (LongText), num (Number), lnk (Link), eml (Email), cal (Calendar), sel (SelectList), chk (Checkboxes), rad (RadioButtons), file (FileAttachment), sig (Signature), cs (ContactSearch), srch (SearchBox), rest (RESTful), grd (Grid), btn (Button)
-
-IMPORTANT: Do NOT mix Form Rules and JavaScript. If using script, handle ALL logic in script.
-
-### Form CSS Styling:
-- Add CSS in the Form Builder CSS tab
-- Use !important for specificity
-- Built-in classes: .int-label, .back-grey, .fcolor-red, .fsize-14, .corner-5, .bord-black, .icon-email
-- Key selectors: form, .title-container, .title, .wrapper, .md-input, md-select, .pikadayDatePicker, textarea, .signaturePadCanvas, .md-icon, .md-button, .buttons_bar, int-form-section-dropzone, .ui-grid-*
-- Version 8: simplified selectors. Version 7: form-scoped selectors.
-- Preview CSS in Preview tab, not the builder
-
-### Form Import/Export:
-- Export: Form > Detail > Export (JSON file)
-- Import: POST /api/forms/import or POST /api/forms/createWithLayout
-- Forms API: POST /api/forms/create, GET /api/forms/search, GET /api/forms/{formSids}, GET /api/forms/{formSid}/questions
-
-### Form Rules (no-code):
-- Use the \`add-rule\` action to create rules programmatically. The engine handles all JSON complexity.
-- Conditions: field + operator (equals, notEqual, lessThan, greaterThan, contains, doesNotContain, isEmpty, isNotEmpty) + value
-- Effects: show, hide, disable, enable, readOnly, editable, required, unrequired, set_answer_with_value, set_answer_with_function
-- Targets: question (field) or section (entire collapsible section)
-- Logic: "all" (AND — all conditions must be true) or "any" (OR — any condition can be true)
-- Inverse rules are auto-generated: flips operators (equal↔notEqual), effects (show↔hide), and logic (any↔all per De Morgan's law)
-- Multiple effects per rule: a single rule can show AND require a field, hide a section AND unrequire multiple fields, etc.
-- Common patterns: Radio "Yes"/"No" → show/hide comments field; Select List value → show/hide signature; Hidden milestone field → show/hide approval section
-
-### Developer Form:
-Custom HTML/JS forms with full control. Tabs: Form Code, View Only Code, Prefill Mappings, Fields To Capture. Use <script id="IntegrifyForm"></script> for helper functions and task variable with prefill data.
+**Form Builder JSON structure:**
+The form GET response is: { _id, name, sid, layout: [...sections], script, css, rules, version }
+Inside layout: sections[] → .contents[] (containers) → .columns[] → .items[] (questions)
+${skillPrompt}
 
 ### Help Center Reference:
-Full documentation at https://www.nutrient.io/workflow-automation/help-center/
-Key guides: Forms, Processes, API Information, Development Resources, Permissions`;
+Full documentation at https://www.nutrient.io/workflow-automation/help-center/`;
 }
 
 // ── Format Response ──
@@ -2191,6 +1863,77 @@ function filterApiExplorer(query) {
   // Expand all groups when filtering
   if (q) {
     $$('.endpoints').forEach(el => el.style.display = 'block');
+  }
+}
+
+// ── Usage History Panel ──
+function showUsageHistory() {
+  const panel = $('#usageHistoryPanel');
+  panel.classList.remove('hidden');
+
+  const allTime = tokenTracker.getAllTimeSummary();
+  const session = tokenTracker.getSummary();
+  const fmt = (n) => tokenTracker._fmt(n);
+
+  // Summary cards
+  const summaryEl = $('#usageSummary');
+  summaryEl.innerHTML = `
+    <div class="usage-stat">
+      <div class="usage-stat-label">Session Requests</div>
+      <div class="usage-stat-value">${session.requests}</div>
+    </div>
+    <div class="usage-stat">
+      <div class="usage-stat-label">Session Tokens</div>
+      <div class="usage-stat-value">${fmt(session.totalTokens)}</div>
+    </div>
+    <div class="usage-stat">
+      <div class="usage-stat-label">All-Time Requests</div>
+      <div class="usage-stat-value">${allTime.requests}</div>
+    </div>
+    <div class="usage-stat">
+      <div class="usage-stat-label">All-Time Tokens</div>
+      <div class="usage-stat-value">${fmt(allTime.totalTokens)}</div>
+    </div>
+  `;
+
+  // Per-request log (most recent first)
+  const entriesEl = $('#usageEntries');
+  entriesEl.innerHTML = '';
+
+  const entries = [...allTime.history].reverse().slice(0, 50);
+  if (entries.length === 0) {
+    entriesEl.innerHTML = '<div style="padding:16px;color:var(--text-muted);font-size:12px;text-align:center;">No usage recorded yet.</div>';
+    return;
+  }
+
+  entries.forEach(e => {
+    const div = document.createElement('div');
+    div.className = 'usage-entry';
+
+    const time = new Date(e.timestamp);
+    const isToday = new Date().toDateString() === time.toDateString();
+    const dateStr = isToday ? time.toLocaleTimeString() : time.toLocaleDateString() + ' ' + time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+    const skillsLabel = e.skills?.length ? e.skills.join(', ') : 'core only';
+    div.innerHTML = `
+      <div class="usage-entry-left">
+        <span class="usage-entry-time">${dateStr}</span>
+        <span class="usage-entry-model">${e.model}</span>
+        <span class="usage-entry-skills">${skillsLabel}</span>
+      </div>
+      <div class="usage-entry-right">
+        <div class="usage-entry-tokens">${fmt(e.totalTokens)} tok</div>
+        <div class="usage-entry-breakdown">${fmt(e.promptTokens)} in · ${fmt(e.completionTokens)} out</div>
+      </div>
+    `;
+    entriesEl.appendChild(div);
+  });
+
+  if (allTime.history.length > 50) {
+    const more = document.createElement('div');
+    more.style.cssText = 'padding:8px 16px;color:var(--text-muted);font-size:11px;text-align:center;';
+    more.textContent = `+ ${allTime.history.length - 50} older entries`;
+    entriesEl.appendChild(more);
   }
 }
 
@@ -2373,9 +2116,9 @@ async function resumeChat(chatId) {
   const container = $('#chatMessages');
   container.innerHTML = '';
 
-  // Rebuild messages in the UI
+  // Rebuild messages in the UI (display only — don't re-execute actions)
   for (const msg of chat.messages) {
-    addMessage(msg.content, msg.role);
+    addMessage(msg.content, msg.role, { displayOnly: true });
   }
 }
 
@@ -2618,22 +2361,75 @@ function setupEventListeners() {
   $('#explorerBack').addEventListener('click', () => $('#apiExplorer').classList.add('hidden'));
   $('#apiSearch').addEventListener('input', (e) => filterApiExplorer(e.target.value));
 
-  $('#recipesBtn').addEventListener('click', showRecipesPanel);
+  // Quick Start dropdown — send selected suggestion as a message
+  $('#quickStartSelect').addEventListener('change', (e) => {
+    const text = e.target.value;
+    if (text) {
+      sendMessage(text);
+      e.target.selectedIndex = 0; // Reset to placeholder
+    }
+  });
+
+  // Refresh suggestions — shuffle to show different ones
+  $('#refreshSuggestions').addEventListener('click', () => {
+    populateSuggestions(_allSuggestions, true);
+    // Brief visual feedback
+    const btn = $('#refreshSuggestions');
+    btn.style.color = 'var(--accent)';
+    btn.style.transform = 'rotate(180deg)';
+    setTimeout(() => { btn.style.color = ''; btn.style.transform = ''; }, 400);
+  });
+
+  // ── Tools Dropdown ──
+  const toolsBtn = $('#toolsDropdownBtn');
+  const toolsMenu = $('#toolsDropdownMenu');
+
+  function toggleToolsMenu(show) {
+    const isHidden = toolsMenu.classList.contains('hidden');
+    const shouldShow = show !== undefined ? show : isHidden;
+    toolsMenu.classList.toggle('hidden', !shouldShow);
+    toolsBtn.classList.toggle('open', shouldShow);
+  }
+
+  toolsBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleToolsMenu();
+  });
+
+  // Close dropdown on outside click
+  document.addEventListener('click', (e) => {
+    if (!toolsMenu.classList.contains('hidden') && !toolsMenu.contains(e.target)) {
+      toggleToolsMenu(false);
+    }
+  });
+
+  // Each menu item closes dropdown then opens its panel
+  const menuActions = {
+    recipesBtn: showRecipesPanel,
+    apiExplorerBtn: () => { const p = $('#apiExplorer'); p && p.classList.remove('hidden'); },
+    testApiBtn: showApiTester,
+    actionLogBtn: showActionLog,
+    chatHistoryBtn: showChatHistory,
+    usageHistoryBtn: showUsageHistory
+  };
+
+  Object.entries(menuActions).forEach(([id, fn]) => {
+    $(`#${id}`)?.addEventListener('click', () => {
+      toggleToolsMenu(false);
+      fn();
+    });
+  });
+
   $('#recipesListBack').addEventListener('click', () => $('#recipesPanel').classList.add('hidden'));
-
   $('#recipeBack').addEventListener('click', () => $('#recipeViewer').classList.add('hidden'));
-
-  $('#testApiBtn').addEventListener('click', showApiTester);
   $('#testBack').addEventListener('click', () => $('#apiTestPanel').classList.add('hidden'));
   $('#executeTest').addEventListener('click', executeApiTest);
 
   // Chat History panel
-  $('#chatHistoryBtn').addEventListener('click', showChatHistory);
   $('#chatHistoryBack').addEventListener('click', () => $('#chatHistoryPanel').classList.add('hidden'));
   $('#newChatBtn').addEventListener('click', startNewChat);
 
   // Action Log panel
-  $('#actionLogBtn').addEventListener('click', showActionLog);
   $('#actionLogBack').addEventListener('click', () => $('#actionLogPanel').classList.add('hidden'));
   $('#logFilter').addEventListener('change', () => renderLogEntries());
   $('#clearLogBtn').addEventListener('click', async () => {
@@ -2641,32 +2437,13 @@ function setupEventListeners() {
     renderLogEntries();
   });
 
-  // Token stats — click to show detailed breakdown
-  $('#tokenStats')?.addEventListener('click', () => {
-    const summary = tokenTracker.getSummary();
-    if (summary.requests === 0) {
-      addMessage('No AI requests made yet this session.', 'assistant');
-      return;
-    }
-    const lines = [
-      `**Session Token Usage** (${summary.requests} requests)`,
-      `| Metric | Count |`,
-      `|--------|-------|`,
-      `| Prompt tokens | ${tokenTracker._fmt(summary.promptTokens)} |`,
-      `| Completion tokens | ${tokenTracker._fmt(summary.completionTokens)} |`,
-      `| **Total tokens** | **${tokenTracker._fmt(summary.totalTokens)}** |`,
-      `| Avg per request | ${tokenTracker._fmt(summary.avgTokensPerRequest)} |`,
-      '',
-      '**Per-request breakdown:**'
-    ];
-    summary.history.slice(-10).forEach((h, i) => {
-      const time = new Date(h.timestamp).toLocaleTimeString();
-      const est = h.model.includes('est.') ? ' ≈' : '';
-      lines.push(`${i + 1}. ${time} — ${tokenTracker._fmt(h.totalTokens)} tokens${est} (${h.model})`);
-    });
-    if (summary.history.length > 10) {
-      lines.push(`... and ${summary.history.length - 10} earlier requests`);
-    }
-    addMessage(lines.join('\n'), 'assistant');
+  // Token stats — click to open usage history panel
+  $('#tokenStats')?.addEventListener('click', showUsageHistory);
+
+  // Usage history panel back/clear
+  $('#usageHistoryBack')?.addEventListener('click', () => $('#usageHistoryPanel').classList.add('hidden'));
+  $('#clearUsageBtn')?.addEventListener('click', () => {
+    tokenTracker.clearAll();
+    showUsageHistory();
   });
 }

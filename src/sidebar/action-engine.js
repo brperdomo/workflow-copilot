@@ -1129,15 +1129,17 @@ function buildReportJSON(params, _logEntry) {
   return report;
 }
 
+let _fieldIdCounter = 0;
 function buildFieldFromTemplate(field, _logEntry) {
   const timestamp = Date.now().toString();
+  const uniqueSuffix = timestamp + '_' + (++_fieldIdCounter);
 
   // ── Normalize QuestionType before anything else ──
   const normalizedType = normalizeQuestionType(field.QuestionType, _logEntry);
   const normalizedClientID = normalizeClientID(field.ClientID, normalizedType, _logEntry);
 
   const base = {
-    id: field.id || 'new_' + timestamp,
+    id: field.id || 'new_' + uniqueSuffix,
     ClientID: normalizedClientID || '',
     type: 'Question_Type',
     Label: field.Label || '',
@@ -1669,13 +1671,28 @@ function buildRule(params, formData, _logEntry) {
     }
   }
 
-  // Build effects
-  const builtEffects = [];
+  // ── Sanitize effects: resolve conflicts before building ──
+  // LLMs often send contradictory effects on the same target (e.g., show + hide on
+  // the same field). Since the inverse rule auto-generates the opposite, we only
+  // need the "positive" (condition-true) effects here. Strategy:
+  //   1. Normalize all effects
+  //   2. Group by resolved target ID
+  //   3. For each target, if conflicting pairs exist (show+hide, required+unrequired,
+  //      enable+disable, editable+readOnly), keep only the positive side
+  //   4. If only negative effects exist for a target, flip them to positive
+  //      (the inverse rule will produce the negative automatically)
+
+  // Positive side of each conflict pair — these are the "when condition is true" effects
+  const POSITIVE_EFFECTS = { 'show': 'hide', 'required': 'unrequired', 'enable': 'disable', 'editable': 'readOnly' };
+  const NEGATIVE_EFFECTS = { 'hide': 'show', 'unrequired': 'required', 'disable': 'enable', 'readOnly': 'editable' };
+
+  // First pass: normalize and resolve all effects
+  const resolvedEffects = [];
   for (const eff of (params.effects || [])) {
     const action = normalizeEffect(eff.action);
     const targetType = (eff.targetType || 'question').toLowerCase();
 
-    let targetId;
+    let targetId, resolvedField;
     if (targetType === 'section') {
       const resolved = resolveSectionForRule(formData, eff.target);
       if (!resolved) {
@@ -1690,28 +1707,79 @@ function buildRule(params, formData, _logEntry) {
         throw new Error(`Rule effect target field "${eff.target}" not found`);
       }
       targetId = resolved.id || resolved.field.ClientID;
+      resolvedField = resolved.field;
     }
 
+    resolvedEffects.push({ action, targetType, targetId, resolvedField, originalTarget: eff.target, value: eff.value, function: eff.function });
+  }
+
+  // Second pass: group by target and detect conflicts
+  const effectsByTarget = {};
+  for (const eff of resolvedEffects) {
+    const key = `${eff.targetType}:${eff.targetId}`;
+    if (!effectsByTarget[key]) effectsByTarget[key] = [];
+    effectsByTarget[key].push(eff);
+  }
+
+  // Third pass: resolve conflicts per target
+  const sanitizedEffects = [];
+  for (const key of Object.keys(effectsByTarget)) {
+    const targetEffects = effectsByTarget[key];
+    const actions = targetEffects.map(e => e.action);
+
+    for (const eff of targetEffects) {
+      const opposite = POSITIVE_EFFECTS[eff.action] || NEGATIVE_EFFECTS[eff.action];
+      const hasConflict = opposite && actions.includes(opposite);
+
+      if (hasConflict) {
+        // Conflict detected: only keep the positive side
+        if (POSITIVE_EFFECTS[eff.action]) {
+          sanitizedEffects.push(eff);
+        }
+        // Skip the negative side — inverse rule will generate it
+      } else if (NEGATIVE_EFFECTS[eff.action]) {
+        // No conflict but this is a standalone negative effect (e.g., only "hide" sent
+        // for this target). Flip to positive so the primary rule shows the field when
+        // condition is true, and the inverse rule hides it when condition is false.
+        sanitizedEffects.push({ ...eff, action: NEGATIVE_EFFECTS[eff.action] });
+        if (_logEntry) {
+          actionLog.addStepResult(_logEntry,
+            `Flipped standalone negative effect "${eff.action}" → "${NEGATIVE_EFFECTS[eff.action]}" on "${eff.originalTarget}" (inverse rule will handle the opposite)`, true);
+        }
+      } else {
+        // No conflict, not a negative effect — keep as-is
+        sanitizedEffects.push(eff);
+      }
+    }
+  }
+
+  if (_logEntry && sanitizedEffects.length !== resolvedEffects.length) {
+    actionLog.addStepResult(_logEntry,
+      `Sanitized rule effects: ${resolvedEffects.length} → ${sanitizedEffects.length} (removed contradictory effects; inverse rule handles opposites)`, true);
+  }
+
+  // Build the final effects array from sanitized effects
+  const builtEffects = [];
+  for (const eff of sanitizedEffects) {
     const builtEffect = {
-      targetType: targetType,
+      targetType: eff.targetType,
       functionSourceTargets: functionSourceTargets,
       actionOptions: ACTION_OPTIONS,
-      target: targetId,
-      action: action
+      target: eff.targetId,
+      action: eff.action
     };
 
-    // For section targets, no QuestionType
-    if (targetType === 'question') {
-      const resolved = resolveFieldForRule(formData, eff.target);
-      if (resolved) builtEffect.QuestionType = resolved.field.QuestionType;
+    // For question targets, include QuestionType
+    if (eff.targetType === 'question' && eff.resolvedField) {
+      builtEffect.QuestionType = eff.resolvedField.QuestionType;
     }
 
     // For set_answer_with_value
-    if (action === 'set_answer_with_value' && eff.value !== undefined) {
+    if (eff.action === 'set_answer_with_value' && eff.value !== undefined) {
       builtEffect.value = eff.value;
     }
     // For set_answer_with_function
-    if (action === 'set_answer_with_function' && eff.function) {
+    if (eff.action === 'set_answer_with_function' && eff.function) {
       builtEffect.function = eff.function;
     }
 

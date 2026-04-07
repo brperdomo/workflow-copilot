@@ -584,7 +584,12 @@ export const CONTEXT_SUGGESTIONS = {
     greeting: "You're in Dashboards. I can help create and configure dashboard widgets.",
     suggestions: [
       'How do I create a dashboard via API?',
-      'How do I copy an existing dashboard?'
+      'How do I copy an existing dashboard?',
+      'How do I add a widget to a dashboard?',
+      'How do I configure dashboard filters?',
+      'How do I embed a dashboard in an external app?',
+      'How do I set dashboard permissions?',
+      'How do I export dashboard data?'
     ],
     relevantServices: ['dashboards']
   },
