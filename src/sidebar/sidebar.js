@@ -600,7 +600,7 @@ function updateContext(context) {
 }
 
 let _allSuggestions = []; // full list for current context
-const MAX_VISIBLE_SUGGESTIONS = 4;
+const MAX_VISIBLE_SUGGESTIONS = 5;
 
 function populateSuggestions(suggestions, shuffle = false) {
   const select = $('#quickStartSelect');
@@ -1641,23 +1641,39 @@ async function callWorkflowAI(userMessage, context) {
     `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`
   ).join('\n\n');
 
-  const fullUserPrompt = conversationContext
+  // ── Structured-output carrier directive ──
+  // The backend's /api/integrations/ai/execute endpoint enforces a JSON schema
+  // ({"fields":[{id,label,description,dataType,value}]}) at the provider SDK level.
+  // We cannot produce free text. Instead we piggyback on the `description` slot
+  // of a single field and put our entire conversational response there. Our
+  // parser extracts fields[0].description as the assistant message.
+  const carrierDirective = `\n\n============================================================\nCRITICAL OUTPUT FORMAT — READ BEFORE RESPONDING:\nYour response is constrained to a JSON schema with a "fields" array. You MUST return exactly ONE field whose "description" contains your ENTIRE conversational answer. Use this shape:\n\n{\n  "fields": [\n    {\n      "id": "copilot-response",\n      "label": "Copilot",\n      "description": "<<PUT YOUR FULL ANSWER HERE — markdown, action blocks, everything>>",\n      "dataType": "string",\n      "value": ""\n    }\n  ]\n}\n\nThe "description" field accepts any string including markdown, code fences, and \\\`\\\`\\\`action blocks. Fit your complete response (explanation + action blocks) into that single description string. Do NOT split your response across multiple fields. Do NOT return an empty fields array — always produce exactly one field.\n============================================================`;
+
+  const fullUserPrompt = (conversationContext
     ? `Previous conversation:\n${conversationContext}\n\nContext: ${context}\n\nUser question: ${userMessage}`
-    : `Context: ${context}\n\nUser question: ${userMessage}`;
+    : `Context: ${context}\n\nUser question: ${userMessage}`) + carrierDirective;
+
+  const requestBody = {
+    aiConnectionId: settings.aiConnectionId,
+    providerParams: {
+      systemPrompt: systemPrompt,
+      userPrompt: fullUserPrompt,
+      temperature: 0.3,
+      maxTokens: 2048
+    },
+    // Request text mode to avoid structured output override
+    responseMode: 'text'
+  };
+  console.log('[Copilot DEBUG] Request URL:', `${baseUrl}/api/integrations/ai/execute`);
+  console.log('[Copilot DEBUG] Request body:', JSON.stringify(requestBody).substring(0, 500));
+  console.log('[Copilot DEBUG] System prompt length:', systemPrompt.length, 'chars');
+  console.log('[Copilot DEBUG] Skills loaded:', tokenTracker._lastSkills);
 
   const response = await fetch(`${baseUrl}/api/integrations/ai/execute`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'include',
-    body: JSON.stringify({
-      aiConnectionId: settings.aiConnectionId,
-      providerParams: {
-        systemPrompt: systemPrompt,
-        userPrompt: fullUserPrompt,
-        temperature: 0.3,
-        maxTokens: 2048
-      }
-    })
+    body: JSON.stringify(requestBody)
   });
 
   if (!response.ok) {
@@ -1666,6 +1682,12 @@ async function callWorkflowAI(userMessage, context) {
   }
 
   const data = await response.json();
+  console.log('[Copilot DEBUG] Response keys:', Object.keys(data));
+  console.log('[Copilot DEBUG] data.content type:', typeof data.content, data.content);
+  console.log('[Copilot DEBUG] data.data type:', typeof data.data, data.data);
+  console.log('[Copilot DEBUG] data.processingInfo:', data.processingInfo);
+  console.log('[Copilot DEBUG] data.success:', data.success);
+  console.log('[Copilot DEBUG] Full response:', JSON.stringify(data).substring(0, 2000));
 
   // ── Track token usage ──
   // Try to extract usage from response — providers nest it differently
@@ -1684,6 +1706,44 @@ async function callWorkflowAI(userMessage, context) {
     const estPrompt = Math.ceil(fullUserPrompt.length / 4) + Math.ceil(systemPrompt.length / 4);
     const estCompletion = Math.ceil((typeof responseText === 'string' ? responseText.length : JSON.stringify(responseText).length) / 4);
     tokenTracker.record({ prompt_tokens: estPrompt, completion_tokens: estCompletion }, model + ' (est.)');
+  }
+
+  // ── Structured-output carrier extraction ──
+  // The backend's /api/integrations/ai/execute forces a {"fields":[...]} schema
+  // at the provider SDK level. We instructed the AI to pack its full response
+  // into fields[0].description. Extract it here and hand the content back to the
+  // normal parser so action blocks & markdown render as expected.
+  const isStructured = data.processingInfo?.responseMode === 'structured';
+  if (isStructured) {
+    console.log('[Copilot] Structured output detected — extracting carrier field');
+
+    // `content` is the parsed schema object; `data` is a stringified copy. Prefer `content`.
+    let structured = data.content;
+    if (!structured || typeof structured !== 'object') {
+      if (typeof data.data === 'string') {
+        try { structured = JSON.parse(data.data); } catch { structured = null; }
+      } else if (data.data && typeof data.data === 'object') {
+        structured = data.data;
+      }
+    }
+
+    if (structured?.fields && Array.isArray(structured.fields)) {
+      const first = structured.fields[0];
+      if (first?.description && typeof first.description === 'string') {
+        // ✅ AI followed the carrier directive — unwrap the conversational payload
+        return first.description;
+      }
+      // AI returned an empty fields array — the carrier directive didn't take hold.
+      // Surface a helpful diagnostic instead of an empty message.
+      if (structured.fields.length === 0) {
+        return `⚠️ The AI returned an empty \`fields\` array — it did not follow the carrier-field directive. This usually means the backend-injected schema is overriding our instructions before the AI ever sees them.\n\n**Try again** (sometimes the next attempt takes), or inspect the system prompt injection with the backend team.\n\nRaw response:\n\`\`\`json\n${JSON.stringify(structured, null, 2)}\n\`\`\``;
+      }
+      // AI produced fields but none had a `description` — render what we can
+      const fallback = structured.fields.map((f, i) =>
+        `**${f.label || f.id || `Field ${i+1}`}**: ${f.description || f.value || '(empty)'}`
+      ).join('\n\n');
+      return fallback;
+    }
   }
 
   // Extract the response text - the execute endpoint returns { data: "...", content: "...", ... }
@@ -1707,6 +1767,16 @@ function buildSystemPrompt(userMessage = '') {
   tokenTracker._lastSkills = skillKeys;
 
   return `You are Workflow Copilot, an expert AI assistant for the Nutrient Workflow platform. You help users build forms, create reports, design processes, and integrate with external services.
+
+## ⚠️ OUTPUT FORMAT (ABSOLUTE REQUIREMENT)
+
+Your response is wrapped by a schema-constrained endpoint that forces the shape \`{"fields":[{id,label,description,dataType,value}]}\`. You CANNOT emit free text directly. You MUST return EXACTLY ONE field, with your ENTIRE conversational answer packed into the \`description\` string:
+
+\`\`\`json
+{"fields":[{"id":"copilot-response","label":"Copilot","description":"<YOUR FULL MARKDOWN ANSWER HERE — explanations, action blocks, everything>","dataType":"string","value":""}]}
+\`\`\`
+
+Do NOT emit multiple fields. Do NOT emit an empty fields array. Everything — including \`\`\`action code fences — goes inside the single \`description\` string.
 
 ## EXECUTABLE ACTIONS — You can DO things, not just advise!
 

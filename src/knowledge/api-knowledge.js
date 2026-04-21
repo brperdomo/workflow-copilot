@@ -544,19 +544,32 @@ export const CONTEXT_SUGGESTIONS = {
       'How do I add a REST Client task to call an external API?',
       'How do I set up transition rules between tasks?',
       'How do I configure data mappings between tasks?',
-      'How do I set up task recipient assignment rules?'
+      'How do I set up task recipient assignment rules?',
+      'Add a Database Pull task to query an external SQL table',
+      'Configure a Document Generation task with merge field mappings',
+      'Set up an approval task with escalation after 48 hours',
+      'Create a parallel branch for simultaneous review and notification',
+      'How do I send an email notification from a process task?',
+      'How do I configure a webhook to trigger this process externally?'
     ],
     relevantServices: ['processes', 'task-dispatcher', 'integrations'],
     relevantRecipes: ['setup-rest-integration', 'setup-webhooks-via-rest-task']
   },
   forms: {
-    greeting: "You're in the Form Builder. I can help with RESTful Data Elements, field configuration, and API connections.",
+    greeting: "You're in the Form Builder. I can help add fields, set up rules, adjust layouts, configure RESTful elements, and more.",
     suggestions: [
-      'How do I set up a RESTful Data Element for API lookups?',
-      'How do I create cascading dropdown lookups?',
-      'How do I configure authentication for form API calls?',
-      'How do I chain multiple API calls on a form?',
-      'How do I map API response data to form fields with JSONata?'
+      'Add a text field called "Employee Name" and a date field for "Start Date"',
+      'Create a select list for Department with options: Engineering, HR, Sales, Finance',
+      'Set up a rule: when Department is "Engineering" show the "Tech Stack" field',
+      'Add a grid/table for listing line items with columns for Description, Qty, and Price',
+      'Use JavaScript to auto-calculate a Total field from Quantity × Unit Price',
+      'Rearrange the form layout to put Name and Email side by side in one row',
+      'Make the "Manager Approval" section only visible when Amount is over 5000',
+      'Set up a RESTful Data Element to pull customer data from an external API',
+      'Create cascading dropdowns: Country → State → City',
+      'Add validation: Email field must match a company domain pattern',
+      'Hide the "Budget Code" field until "Needs Budget" checkbox is checked',
+      'Add a multi-line text area for Comments with a 500-character limit'
     ],
     relevantServices: ['forms', 'integrations'],
     relevantRecipes: ['setup-restful-form-element', 'cascading-form-lookups']
@@ -622,13 +635,18 @@ export const CONTEXT_SUGGESTIONS = {
     relevantServices: ['instance', 'task-dispatcher']
   },
   unknown: {
-    greeting: "Welcome to Workflow Copilot! I can help you set up API integrations, configure RESTful form elements, and navigate the 508 Workflow API endpoints.",
+    greeting: "Welcome to Workflow Copilot! I can help you build forms, configure processes, set up integrations, and navigate the 508 Workflow API endpoints.",
     suggestions: [
       'Set up a REST API integration',
       'Configure RESTful Data Elements on a form',
       'Start workflow instances from an external system',
       'Connect to an external database',
-      'Set up an AI connection'
+      'Set up an AI connection',
+      'Build an employee onboarding form with multiple sections',
+      'Create a document generation process from form data',
+      'Set up approval routing based on form field values',
+      'How do I configure a Database Pull task?',
+      'Show me integration recipes for common setups'
     ]
   }
 };

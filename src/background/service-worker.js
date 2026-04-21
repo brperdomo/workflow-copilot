@@ -13,10 +13,10 @@ chrome.sidePanel.setOptions({
 
 // Enable/disable panel based on tab URL
 function updatePanelForTab(tabId, url) {
-  const isWorkflow = url && WORKFLOW_URL_PATTERNS.some(pattern => {
+  const isWorkflow = !!(url && WORKFLOW_URL_PATTERNS.some(pattern => {
     const regex = new RegExp('^' + pattern.replace(/\*/g, '.*') + '$');
     return regex.test(url);
-  });
+  }));
 
   chrome.sidePanel.setOptions({
     tabId,
@@ -40,10 +40,10 @@ chrome.tabs.onActivated.addListener(async ({ tabId }) => {
 
 // Open side panel when extension icon is clicked
 chrome.action.onClicked.addListener(async (tab) => {
-  const isWorkflow = tab.url && WORKFLOW_URL_PATTERNS.some(pattern => {
+  const isWorkflow = !!(tab.url && WORKFLOW_URL_PATTERNS.some(pattern => {
     const regex = new RegExp('^' + pattern.replace(/\*/g, '.*') + '$');
     return regex.test(tab.url);
-  });
+  }));
 
   if (isWorkflow) {
     await chrome.sidePanel.open({ tabId: tab.id });
