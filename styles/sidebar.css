@@ -443,6 +443,86 @@ body {
   transform: translateY(0);
 }
 
+/* Stop-generation state — red square */
+.send-btn.is-stopping {
+  background: #ef4444;
+  animation: stop-pulse 1.4s ease-in-out infinite;
+}
+.send-btn.is-stopping:hover {
+  background: #dc2626;
+  box-shadow: 0 2px 8px rgba(239, 68, 68, 0.4);
+}
+@keyframes stop-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.5); }
+  50%      { box-shadow: 0 0 0 6px rgba(239, 68, 68, 0); }
+}
+
+/* ── Slash command autocomplete ── */
+.slash-menu {
+  position: absolute;
+  bottom: calc(100% - 6px);
+  left: 16px;
+  right: 16px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 4px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3), 0 2px 8px rgba(0, 0, 0, 0.2);
+  z-index: 50;
+  max-height: 220px;
+  overflow-y: auto;
+  animation: slashMenuIn 0.12s ease-out;
+}
+
+@keyframes slashMenuIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.slash-item {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 10px;
+  background: none;
+  border: none;
+  border-radius: 6px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.1s;
+}
+
+.slash-item.active,
+.slash-item:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.slash-item .slash-name {
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  flex-shrink: 0;
+  min-width: 90px;
+}
+
+.slash-item .slash-desc {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.slash-item.active .slash-desc {
+  color: var(--text-secondary);
+}
+
+/* Position context — input area must be relative for absolute slash menu */
+.input-area {
+  position: relative;
+}
+
 .input-footer {
   display: flex;
   align-items: center;
@@ -1774,4 +1854,90 @@ body {
 .chat-delete-btn:hover {
   color: #ef4444;
   background: rgba(239, 68, 68, 0.1);
+}
+
+/* ═══════════════════════════════════
+   Message Badges (skills + confidence)
+   ═══════════════════════════════════ */
+.message-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border-subtle);
+}
+
+.message-badges .badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.2px;
+  border-radius: var(--radius-pill);
+  white-space: nowrap;
+  line-height: 1.4;
+  user-select: none;
+}
+
+/* Skill modules — accent-toned */
+.message-badges .badge-skill {
+  color: var(--accent);
+  background: var(--accent-dim);
+  border: 1px solid var(--border-accent);
+}
+
+/* Confidence — color-coded */
+.message-badges .badge-confidence {
+  text-transform: capitalize;
+  font-weight: 600;
+}
+
+.message-badges .badge-confidence .badge-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.message-badges .badge-confidence-high {
+  color: #4ade80;
+  background: rgba(74, 222, 128, 0.10);
+  border: 1px solid rgba(74, 222, 128, 0.35);
+}
+.message-badges .badge-confidence-high .badge-dot {
+  background: #4ade80;
+  box-shadow: 0 0 6px rgba(74, 222, 128, 0.6);
+}
+
+.message-badges .badge-confidence-medium {
+  color: #fbbf24;
+  background: rgba(251, 191, 36, 0.10);
+  border: 1px solid rgba(251, 191, 36, 0.35);
+}
+.message-badges .badge-confidence-medium .badge-dot {
+  background: #fbbf24;
+  box-shadow: 0 0 6px rgba(251, 191, 36, 0.6);
+}
+
+.message-badges .badge-confidence-low {
+  color: #f87171;
+  background: rgba(248, 113, 113, 0.10);
+  border: 1px solid rgba(248, 113, 113, 0.35);
+}
+.message-badges .badge-confidence-low .badge-dot {
+  background: #f87171;
+  box-shadow: 0 0 6px rgba(248, 113, 113, 0.6);
+}
+
+/* Model + latency — subtle */
+.message-badges .badge-meta {
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid var(--border-subtle);
+  font-size: 9.5px;
+  margin-left: auto;
 }

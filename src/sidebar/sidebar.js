@@ -3,7 +3,7 @@ import { API_SERVICES, RECIPES, CONTEXT_SUGGESTIONS, RESTFUL_ELEMENT_GUIDE } fro
 import { EXTERNAL_SERVICES, INTENT_MAPPING } from '../knowledge/external-integrations.js';
 import { FORM_SCRIPTING } from '../knowledge/form-scripting.js';
 import { HELP_CENTER } from '../knowledge/help-center.js';
-import { resolveSkills, buildSkillPrompt, getSkillMenu } from './prompt-skills.js';
+import { resolveSkills, buildSkillPrompt, getSkillMenu, SKILL_MODULES } from './prompt-skills.js';
 import {
   ACTION_REGISTRY,
   ActionEngine,
@@ -648,7 +648,59 @@ chrome.runtime.onMessage.addListener((message) => {
 });
 
 // ── Chat ──
-function addMessage(content, role, { displayOnly = false } = {}) {
+// Pretty-print a skill key like "form-fields" → "Form Fields"
+function _skillLabel(key) {
+  if (!key) return '';
+  return key.split(/[-_]/).map(w => w[0]?.toUpperCase() + w.slice(1)).join(' ');
+}
+
+// Build the skill + confidence badge bar for an assistant message.
+function buildBadgeBar(metadata) {
+  if (!metadata) return null;
+  const { confidence, skills, model, latencyMs } = metadata;
+  const hasAny = (skills && skills.length) || confidence || model;
+  if (!hasAny) return null;
+
+  const bar = document.createElement('div');
+  bar.className = 'message-badges';
+
+  // Confidence pill
+  if (confidence) {
+    const pill = document.createElement('span');
+    pill.className = `badge badge-confidence badge-confidence-${confidence}`;
+    pill.title = `LLM self-rated confidence: ${confidence}`;
+    const dot = document.createElement('span');
+    dot.className = 'badge-dot';
+    pill.appendChild(dot);
+    pill.appendChild(document.createTextNode(confidence));
+    bar.appendChild(pill);
+  }
+
+  // Skill pills
+  if (skills && skills.length) {
+    skills.forEach(s => {
+      const pill = document.createElement('span');
+      pill.className = 'badge badge-skill';
+      pill.textContent = _skillLabel(s);
+      pill.title = `Skill module loaded: ${s}`;
+      bar.appendChild(pill);
+    });
+  }
+
+  // Model + latency (subtle)
+  if (model && model !== 'builtin') {
+    const meta = document.createElement('span');
+    meta.className = 'badge badge-meta';
+    const latencyTxt = latencyMs ? ` · ${(latencyMs / 1000).toFixed(1)}s` : '';
+    meta.textContent = `${model}${latencyTxt}`;
+    meta.title = 'Model · response latency';
+    bar.appendChild(meta);
+  }
+
+  return bar;
+}
+
+function addMessage(content, role, { displayOnly = false, metadata = null } = {}) {
   const container = $('#chatMessages');
   const welcome = container.querySelector('.welcome-message');
   if (welcome) welcome.remove();
@@ -705,10 +757,19 @@ function addMessage(content, role, { displayOnly = false } = {}) {
     msg.textContent = content;
   }
 
+  // Append skill + confidence badges for assistant messages
+  if (role === 'assistant' && metadata) {
+    const bar = buildBadgeBar(metadata);
+    if (bar) msg.appendChild(bar);
+  }
+
   container.appendChild(msg);
   container.scrollTop = container.scrollHeight;
 
-  chatHistory.push({ role, content });
+  // Persist metadata so badges survive reload
+  const historyEntry = { role, content };
+  if (metadata) historyEntry.metadata = metadata;
+  chatHistory.push(historyEntry);
 
   // Auto-save after each message (debounced — don't await, fire and forget)
   if (role === 'user' || role === 'assistant') {
@@ -897,9 +958,9 @@ async function autoExecuteActions(actions, container) {
     chatHistory.push({ role: 'system', content: continuationMsg });
     showTyping();
     try {
-      const response = await generateResponse(continuationMsg);
+      const { text, metadata } = await generateResponse(continuationMsg);
       hideTyping();
-      addMessage(response, 'assistant');
+      addMessage(text, 'assistant', { metadata });
     } catch (err) {
       hideTyping();
       addMessage(`Auto-continuation failed: ${err.message}`, 'assistant');
@@ -1073,35 +1134,247 @@ function hideTyping() {
   if (indicator) indicator.remove();
 }
 
+// ══════════════════════════════════════════════════════════════════════
+//  Slash Commands
+//  Type / in the input → autocomplete dropdown. Commands run synchronously
+//  and bypass the AI entirely. Unknown commands fall through as a normal
+//  user message.
+// ══════════════════════════════════════════════════════════════════════
+const SLASH_COMMANDS = [
+  {
+    name: '/clear',
+    description: 'Start a fresh chat',
+    handler: () => { startNewChat(); }
+  },
+  {
+    name: '/skills',
+    description: 'Show which skill modules loaded for the last request',
+    handler: () => {
+      const skills = tokenTracker._lastSkills || [];
+      const all = Object.keys(SKILL_MODULES || {});
+      const text = skills.length === 0
+        ? `No skills have been loaded yet. Skills load on demand when you ask form/process/report questions.\n\n**All available skills:**\n${all.map(s => `- ${s}`).join('\n')}`
+        : `**Skills loaded for the last request:**\n${skills.map(s => `- ${s}`).join('\n')}\n\n**All available skills:**\n${all.map(s => `- ${s}${skills.includes(s) ? ' ✓' : ''}`).join('\n')}`;
+      addMessage(text, 'assistant', { metadata: { skills, confidence: null, model: 'system', latencyMs: null } });
+    }
+  },
+  {
+    name: '/forms',
+    description: 'List all forms in this tenant',
+    handler: () => {
+      sendMessage('List all forms in this tenant');
+    }
+  },
+  {
+    name: '/processes',
+    description: 'List all processes in this tenant',
+    handler: () => {
+      sendMessage('List all processes in this tenant');
+    }
+  },
+  {
+    name: '/usage',
+    description: 'Open the usage history panel',
+    handler: () => { if (typeof showUsageHistory === 'function') showUsageHistory(); }
+  },
+  {
+    name: '/log',
+    description: 'Open the action log',
+    handler: () => { if (typeof showActionLog === 'function') showActionLog(); }
+  },
+  {
+    name: '/recipes',
+    description: 'Open the recipes panel',
+    handler: () => { if (typeof showRecipesPanel === 'function') showRecipesPanel(); }
+  },
+  {
+    name: '/api',
+    description: 'Open the API explorer',
+    handler: () => { const p = $('#apiExplorer'); p && p.classList.remove('hidden'); }
+  },
+  {
+    name: '/help',
+    description: 'Show what Copilot can do',
+    handler: () => {
+      const cmds = SLASH_COMMANDS.map(c => `- \`${c.name}\` — ${c.description}`).join('\n');
+      const text = `**Workflow Copilot — quick reference**\n\n**Slash commands:**\n${cmds}\n\n**Tips:**\n- Press \`Esc\` while generating to stop the response\n- Hover any message to see model + latency\n- Confidence badges show how sure the AI was — re-run if you see "low"\n- Quick Start dropdown above gives context-aware example prompts`;
+      addMessage(text, 'assistant', { metadata: { skills: [], confidence: null, model: 'system', latencyMs: null } });
+    }
+  }
+];
+
+let _slashMenuEl = null;
+let _slashMenuIndex = 0;
+let _slashMenuFiltered = [];
+
+function ensureSlashMenu() {
+  if (_slashMenuEl) return _slashMenuEl;
+  const el = document.createElement('div');
+  el.id = 'slashMenu';
+  el.className = 'slash-menu hidden';
+  // Place it above the input
+  const inputArea = $('#inputArea');
+  inputArea?.appendChild(el);
+  _slashMenuEl = el;
+  return el;
+}
+
+function hideSlashMenu() {
+  const el = ensureSlashMenu();
+  el.classList.add('hidden');
+  _slashMenuFiltered = [];
+  _slashMenuIndex = 0;
+}
+
+function renderSlashMenu(filtered) {
+  const el = ensureSlashMenu();
+  if (filtered.length === 0) {
+    hideSlashMenu();
+    return;
+  }
+  el.classList.remove('hidden');
+  el.innerHTML = filtered.map((c, i) => `
+    <button class="slash-item${i === _slashMenuIndex ? ' active' : ''}" data-index="${i}">
+      <span class="slash-name">${c.name}</span>
+      <span class="slash-desc">${c.description}</span>
+    </button>
+  `).join('');
+
+  // Bind click handlers
+  el.querySelectorAll('.slash-item').forEach(btn => {
+    btn.addEventListener('mouseenter', () => {
+      _slashMenuIndex = parseInt(btn.dataset.index, 10);
+      renderSlashMenu(_slashMenuFiltered);
+    });
+    btn.addEventListener('click', () => {
+      const cmd = _slashMenuFiltered[parseInt(btn.dataset.index, 10)];
+      if (cmd) {
+        $('#userInput').value = cmd.name;
+        runSlashCommand(cmd.name);
+        $('#userInput').value = '';
+        hideSlashMenu();
+      }
+    });
+  });
+}
+
+function updateSlashMenu(inputValue) {
+  if (!inputValue.startsWith('/')) {
+    hideSlashMenu();
+    return;
+  }
+  // Only show suggestions before the first space (so once they type args, hide)
+  if (inputValue.includes(' ')) {
+    hideSlashMenu();
+    return;
+  }
+  const query = inputValue.slice(1).toLowerCase();
+  _slashMenuFiltered = SLASH_COMMANDS.filter(c => c.name.slice(1).toLowerCase().startsWith(query));
+  if (_slashMenuFiltered.length === 0) {
+    hideSlashMenu();
+    return;
+  }
+  if (_slashMenuIndex >= _slashMenuFiltered.length) _slashMenuIndex = 0;
+  renderSlashMenu(_slashMenuFiltered);
+}
+
+async function runSlashCommand(text) {
+  const name = text.split(/\s+/)[0].toLowerCase();
+  const cmd = SLASH_COMMANDS.find(c => c.name === name);
+  if (!cmd) return false;
+  try {
+    await cmd.handler(text);
+  } catch (e) {
+    addMessage(`Slash command failed: ${e.message}`, 'assistant');
+  }
+  return true;
+}
+
+// In-flight controller so the user can cancel mid-generation
+let _activeAbortController = null;
+
+function _setSendBtnState(state) {
+  const btn = $('#sendBtn');
+  if (!btn) return;
+  if (state === 'stop') {
+    btn.classList.add('is-stopping');
+    btn.title = 'Stop generation';
+    btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg>';
+  } else {
+    btn.classList.remove('is-stopping');
+    btn.title = 'Send';
+    btn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>';
+  }
+}
+
 async function sendMessage(text) {
+  // If a generation is already running, treat click as a stop
+  if (_activeAbortController) {
+    _activeAbortController.abort();
+    return;
+  }
+
   if (!text.trim()) return;
+
+  // Slash-command interception — handlers run instead of hitting the AI
+  if (text.trim().startsWith('/')) {
+    const handled = await runSlashCommand(text.trim());
+    if (handled) {
+      $('#userInput').value = '';
+      $('#userInput').style.height = 'auto';
+      hideSlashMenu();
+      return;
+    }
+    // unknown commands fall through to the AI as a regular message
+  }
 
   addMessage(text, 'user');
   $('#userInput').value = '';
   $('#userInput').style.height = 'auto';
+  hideSlashMenu();
 
+  const controller = new AbortController();
+  _activeAbortController = controller;
+  _setSendBtnState('stop');
   showTyping();
 
   try {
-    const response = await generateResponse(text);
+    const { text: responseText, metadata } = await generateResponse(text, controller.signal);
     hideTyping();
-    addMessage(response, 'assistant');
+    addMessage(responseText, 'assistant', { metadata });
   } catch (err) {
     hideTyping();
-    addMessage(`Error: ${err.message}. Check your settings and try again.`, 'assistant');
+    if (err.name === 'AbortError') {
+      addMessage('⏹ Generation stopped.', 'assistant');
+    } else {
+      addMessage(`Error: ${err.message}. Check your settings and try again.`, 'assistant');
+    }
+  } finally {
+    _activeAbortController = null;
+    _setSendBtnState('send');
   }
 }
 
 // ── AI Response Generation ──
-async function generateResponse(userMessage) {
+// Always returns { text, metadata: {confidence, skills, model, latencyMs} }.
+async function generateResponse(userMessage, signal = null) {
   const context = buildContext(userMessage);
 
+  let result;
   if (!settings.aiConnectionId || settings.useBuiltin) {
-    return generateBuiltinResponse(userMessage, context);
+    result = generateBuiltinResponse(userMessage, context);
+  } else {
+    result = await callWorkflowAI(userMessage, context, signal);
   }
 
-  // Route through Workflow's AI execute endpoint
-  return callWorkflowAI(userMessage, context);
+  // Normalize: callWorkflowAI returns {text, metadata}; builtin returns plain string
+  if (typeof result === 'string') {
+    return {
+      text: result,
+      metadata: { confidence: null, skills: [], model: 'builtin', latencyMs: null }
+    };
+  }
+  return result;
 }
 
 function buildContext(userMessage) {
@@ -1628,7 +1901,7 @@ function formatRecipe(recipe) {
 }
 
 // ── Workflow AI Execute ──
-async function callWorkflowAI(userMessage, context) {
+async function callWorkflowAI(userMessage, context, signal = null) {
   const systemPrompt = buildSystemPrompt(userMessage);
   const baseUrl = settings.baseUrl || await getBaseUrl();
 
@@ -1647,7 +1920,7 @@ async function callWorkflowAI(userMessage, context) {
   // We cannot produce free text. Instead we piggyback on the `description` slot
   // of a single field and put our entire conversational response there. Our
   // parser extracts fields[0].description as the assistant message.
-  const carrierDirective = `\n\n============================================================\nCRITICAL OUTPUT FORMAT — READ BEFORE RESPONDING:\nYour response is constrained to a JSON schema with a "fields" array. You MUST return exactly ONE field whose "description" contains your ENTIRE conversational answer. Use this shape:\n\n{\n  "fields": [\n    {\n      "id": "copilot-response",\n      "label": "Copilot",\n      "description": "<<PUT YOUR FULL ANSWER HERE — markdown, action blocks, everything>>",\n      "dataType": "string",\n      "value": ""\n    }\n  ]\n}\n\nThe "description" field accepts any string including markdown, code fences, and \\\`\\\`\\\`action blocks. Fit your complete response (explanation + action blocks) into that single description string. Do NOT split your response across multiple fields. Do NOT return an empty fields array — always produce exactly one field.\n============================================================`;
+  const carrierDirective = `\n\n============================================================\nCRITICAL OUTPUT FORMAT — READ BEFORE RESPONDING:\nYour response is constrained to a JSON schema with a "fields" array. You MUST return exactly ONE field whose "description" contains your ENTIRE conversational answer. Use this shape:\n\n{\n  "fields": [\n    {\n      "id": "copilot-response",\n      "label": "Copilot",\n      "description": "<<PUT YOUR FULL ANSWER HERE — markdown, action blocks, everything>>",\n      "dataType": "string",\n      "value": "<<CONFIDENCE: 'high' | 'medium' | 'low'>>"\n    }\n  ]\n}\n\nThe "description" field accepts any string including markdown, code fences, and \\\`\\\`\\\`action blocks. Fit your complete response (explanation + action blocks) into that single description string.\n\nThe "value" field MUST be one of the strings "high", "medium", or "low" indicating your confidence in the answer:\n- "high"   = clear request, you have full knowledge of how to satisfy it, no ambiguity\n- "medium" = mostly clear but you had to make at least one inference (field name, section placement, ID convention, etc.)\n- "low"    = the request is ambiguous, you're guessing at structure, or you're not sure the action will succeed\n\nDo NOT split your response across multiple fields. Do NOT return an empty fields array — always produce exactly one field. Do NOT leave "value" empty.\n============================================================`;
 
   const fullUserPrompt = (conversationContext
     ? `Previous conversation:\n${conversationContext}\n\nContext: ${context}\n\nUser question: ${userMessage}`
@@ -1673,7 +1946,8 @@ async function callWorkflowAI(userMessage, context) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'include',
-    body: JSON.stringify(requestBody)
+    body: JSON.stringify(requestBody),
+    signal
   });
 
   if (!response.ok) {
@@ -1731,30 +2005,46 @@ async function callWorkflowAI(userMessage, context) {
       const first = structured.fields[0];
       if (first?.description && typeof first.description === 'string') {
         // ✅ AI followed the carrier directive — unwrap the conversational payload
-        return first.description;
+        const rawConfidence = (first.value || '').toLowerCase().trim();
+        const confidence = ['high', 'medium', 'low'].includes(rawConfidence) ? rawConfidence : null;
+        return {
+          text: first.description,
+          metadata: {
+            confidence,
+            skills: [...(tokenTracker._lastSkills || [])],
+            model: data.model || 'unknown',
+            latencyMs: data.latency || null
+          }
+        };
       }
       // AI returned an empty fields array — the carrier directive didn't take hold.
-      // Surface a helpful diagnostic instead of an empty message.
       if (structured.fields.length === 0) {
-        return `⚠️ The AI returned an empty \`fields\` array — it did not follow the carrier-field directive. This usually means the backend-injected schema is overriding our instructions before the AI ever sees them.\n\n**Try again** (sometimes the next attempt takes), or inspect the system prompt injection with the backend team.\n\nRaw response:\n\`\`\`json\n${JSON.stringify(structured, null, 2)}\n\`\`\``;
+        return {
+          text: `⚠️ The AI returned an empty \`fields\` array — it did not follow the carrier-field directive. This usually means the backend-injected schema is overriding our instructions before the AI ever sees them.\n\n**Try again** (sometimes the next attempt takes), or inspect the system prompt injection with the backend team.\n\nRaw response:\n\`\`\`json\n${JSON.stringify(structured, null, 2)}\n\`\`\``,
+          metadata: { confidence: null, skills: [...(tokenTracker._lastSkills || [])], model: data.model || 'unknown', latencyMs: data.latency || null }
+        };
       }
       // AI produced fields but none had a `description` — render what we can
       const fallback = structured.fields.map((f, i) =>
         `**${f.label || f.id || `Field ${i+1}`}**: ${f.description || f.value || '(empty)'}`
       ).join('\n\n');
-      return fallback;
+      return { text: fallback, metadata: { confidence: null, skills: [...(tokenTracker._lastSkills || [])], model: data.model || 'unknown', latencyMs: data.latency || null } };
     }
   }
 
   // Extract the response text - the execute endpoint returns { data: "...", content: "...", ... }
-  if (data.data && typeof data.data === 'string') return data.data;
-  if (data.content && typeof data.content === 'string') return data.content;
-  if (typeof data === 'string') return data;
-  if (data.text) return data.text;
-  if (Array.isArray(data.content) && data.content[0]?.text) return data.content[0].text;
-  if (data.choices?.[0]?.message?.content) return data.choices[0].message.content;
+  const wrap = (text) => ({
+    text,
+    metadata: { confidence: null, skills: [...(tokenTracker._lastSkills || [])], model: data.model || 'unknown', latencyMs: data.latency || null }
+  });
+  if (data.data && typeof data.data === 'string') return wrap(data.data);
+  if (data.content && typeof data.content === 'string') return wrap(data.content);
+  if (typeof data === 'string') return wrap(data);
+  if (data.text) return wrap(data.text);
+  if (Array.isArray(data.content) && data.content[0]?.text) return wrap(data.content[0].text);
+  if (data.choices?.[0]?.message?.content) return wrap(data.choices[0].message.content);
 
-  return JSON.stringify(data);
+  return wrap(JSON.stringify(data));
 }
 
 function buildSystemPrompt(userMessage = '') {
@@ -1770,13 +2060,13 @@ function buildSystemPrompt(userMessage = '') {
 
 ## ⚠️ OUTPUT FORMAT (ABSOLUTE REQUIREMENT)
 
-Your response is wrapped by a schema-constrained endpoint that forces the shape \`{"fields":[{id,label,description,dataType,value}]}\`. You CANNOT emit free text directly. You MUST return EXACTLY ONE field, with your ENTIRE conversational answer packed into the \`description\` string:
+Your response is wrapped by a schema-constrained endpoint that forces the shape \`{"fields":[{id,label,description,dataType,value}]}\`. You CANNOT emit free text directly. You MUST return EXACTLY ONE field, with your ENTIRE conversational answer packed into the \`description\` string and your confidence rating in \`value\`:
 
 \`\`\`json
-{"fields":[{"id":"copilot-response","label":"Copilot","description":"<YOUR FULL MARKDOWN ANSWER HERE — explanations, action blocks, everything>","dataType":"string","value":""}]}
+{"fields":[{"id":"copilot-response","label":"Copilot","description":"<YOUR FULL MARKDOWN ANSWER HERE — explanations, action blocks, everything>","dataType":"string","value":"high"}]}
 \`\`\`
 
-Do NOT emit multiple fields. Do NOT emit an empty fields array. Everything — including \`\`\`action code fences — goes inside the single \`description\` string.
+The \`value\` field MUST be \`"high"\`, \`"medium"\`, or \`"low"\` — your honest self-assessment of confidence. Do NOT emit multiple fields. Do NOT emit an empty fields array. Everything — including \`\`\`action code fences — goes inside the single \`description\` string.
 
 ## EXECUTABLE ACTIONS — You can DO things, not just advise!
 
@@ -2188,7 +2478,7 @@ async function resumeChat(chatId) {
 
   // Rebuild messages in the UI (display only — don't re-execute actions)
   for (const msg of chat.messages) {
-    addMessage(msg.content, msg.role, { displayOnly: true });
+    addMessage(msg.content, msg.role, { displayOnly: true, metadata: msg.metadata || null });
   }
 }
 
@@ -2399,19 +2689,67 @@ function renderLogEntries() {
 
 // ── Event Listeners ──
 function setupEventListeners() {
-  // Send message
+  // Send / stop button
   $('#sendBtn').addEventListener('click', () => sendMessage($('#userInput').value));
   $('#userInput').addEventListener('keydown', (e) => {
+    // Slash menu navigation takes precedence when visible
+    const slashEl = document.getElementById('slashMenu');
+    const slashOpen = slashEl && !slashEl.classList.contains('hidden') && _slashMenuFiltered.length > 0;
+
+    if (slashOpen) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        _slashMenuIndex = (_slashMenuIndex + 1) % _slashMenuFiltered.length;
+        renderSlashMenu(_slashMenuFiltered);
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        _slashMenuIndex = (_slashMenuIndex - 1 + _slashMenuFiltered.length) % _slashMenuFiltered.length;
+        renderSlashMenu(_slashMenuFiltered);
+        return;
+      }
+      if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+        e.preventDefault();
+        const cmd = _slashMenuFiltered[_slashMenuIndex];
+        if (cmd) {
+          $('#userInput').value = cmd.name;
+          runSlashCommand(cmd.name);
+          $('#userInput').value = '';
+          hideSlashMenu();
+        }
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        hideSlashMenu();
+        return;
+      }
+    }
+
+    // Esc with no slash menu — abort generation if running
+    if (e.key === 'Escape' && _activeAbortController) {
+      e.preventDefault();
+      _activeAbortController.abort();
+      return;
+    }
+
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       sendMessage($('#userInput').value);
     }
   });
 
-  // Auto-resize textarea
+  // Auto-resize textarea + slash command suggestions
   $('#userInput').addEventListener('input', function () {
     this.style.height = 'auto';
     this.style.height = Math.min(this.scrollHeight, 120) + 'px';
+    updateSlashMenu(this.value);
+  });
+
+  // Hide slash menu when input loses focus (with a slight delay so clicks register)
+  $('#userInput').addEventListener('blur', () => {
+    setTimeout(() => hideSlashMenu(), 150);
   });
 
   // Settings
